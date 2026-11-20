@@ -1,0 +1,25 @@
+[package]
+name = "frenz"
+description = "Async client for the FRENZ brainband over Bluetooth LE: streams, commands, lossless recording"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords = ["frenz","eeg","bluetooth","ble","wearable"]
+categories = ["science","hardware-support","asynchronous"]
+
+[dependencies]
+frenz-proto = { workspace = true }
+btleplug = "0.13"
+futures = "0.3"
+rusqlite = { version = "0.43", features = ["bundled"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1.54", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tracing = "0.1"
+uuid = "1"
+
+[lints]
+workspace = true

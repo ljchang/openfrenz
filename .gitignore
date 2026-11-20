@@ -1,0 +1,13 @@
+recordings/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.db
+target/
+__pycache__/
+.venv/
+.DS_Store
+sessions/
+python/.venv/
+*.egg-info/
+.pytest_cache/

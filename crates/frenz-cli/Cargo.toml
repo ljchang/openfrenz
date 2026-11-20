@@ -1,0 +1,31 @@
+[package]
+name = "frenz-cli"
+description = "Command-line tool for the FRENZ brainband: scan, record, summarize"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords = ["frenz","eeg","bluetooth","cli","wearable"]
+categories = ["science","command-line-utilities"]
+
+[[bin]]
+name = "frenz"
+path = "src/main.rs"
+doc = false
+
+[dependencies]
+frenz = { workspace = true }
+frenz-proto = { workspace = true }
+frenz-export = { workspace = true }
+serde_json = "1"
+anyhow = "1"
+clap = { version = "4.6", features = ["derive"] }
+rusqlite = { version = "0.43", features = ["bundled"] }
+tokio = { version = "1.54", features = ["rt-multi-thread", "macros", "signal", "time", "sync"] }
+uuid = "1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,25 @@
+[package]
+name = "frenz-export"
+description = "Turn openfrenz recordings of the FRENZ brainband into time-aligned Parquet session datasets"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords = ["frenz","eeg","parquet","wearable"]
+categories = ["science","encoding"]
+
+[dependencies]
+frenz = { workspace = true }
+frenz-proto = { workspace = true }
+arrow-array = "60.1"
+arrow-schema = "60.1"
+parquet = { version = "60.1", default-features = false, features = ["arrow", "zstd"] }
+rusqlite = { version = "0.43", features = ["bundled"] }
+serde_json = "1"
+thiserror = "2"
+uuid = "1"
+
+[lints]
+workspace = true

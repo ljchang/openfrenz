@@ -1,0 +1,15 @@
+[project]
+name = "openfrenz"
+version = "0.1.0"
+description = "Load openfrenz session datasets (FRENZ brainband) and build aligned fixed-length windows for analysis"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.26", "pandas>=2.0", "pyarrow>=15"]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

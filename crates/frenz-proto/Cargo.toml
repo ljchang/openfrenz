@@ -1,0 +1,21 @@
+[package]
+name = "frenz-proto"
+description = "Wire-protocol decoders and command encoders for the FRENZ brainband (no I/O, no_std)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords = ["frenz","eeg","bluetooth","no-std","wearable"]
+categories = ["science","no-std","parser-implementations"]
+
+[features]
+default = ["std"]
+std = []
+
+[dev-dependencies]
+proptest = "1.12"
+
+[lints]
+workspace = true
