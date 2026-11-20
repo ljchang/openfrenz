@@ -1,6 +1,6 @@
 [project]
 name = "openfrenz"
-version = "0.1.0"
+version = "0.2.0"
 description = "Load openfrenz session datasets (FRENZ brainband) and build aligned fixed-length windows for analysis"
 readme = "README.md"
 license = "MIT"

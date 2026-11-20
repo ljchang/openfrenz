@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/frenz-proto", "crates/frenz", "crates/frenz-export", "crates/frenz-cli"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
@@ -11,9 +11,9 @@ repository = "https://github.com/ljchang/openfrenz"
 description = "Unofficial open-source interface to the FRENZ brainband over Bluetooth LE"
 
 [workspace.dependencies]
-frenz-proto = { path = "crates/frenz-proto", version = "0.1.0" }
-frenz = { path = "crates/frenz", version = "0.1.0" }
-frenz-export = { path = "crates/frenz-export", version = "0.1.0" }
+frenz-proto = { path = "crates/frenz-proto", version = "0.2.0" }
+frenz = { path = "crates/frenz", version = "0.2.0" }
+frenz-export = { path = "crates/frenz-export", version = "0.2.0" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

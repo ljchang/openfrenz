@@ -44,7 +44,7 @@ stronger than the next) and from eyes-open/eyes-closed recordings (alpha power �
   y/z axes are rotated about 30° around x relative to the band.
 - Accelerometer: ±2 g, 16-bit, ≈ 16 384 counts/g. A six-orientation static calibration of one unit gave
   per-axis scales within 1.3 % of nominal and biases of a few hundred counts; calibrate each unit.
-- Gyroscope: small, stable at-rest bias (tens to ~100 counts); scale (deg/s per count) not yet known.
+- Gyroscope: small at-rest bias (tens to ~100 counts). Scale is probably 65.5 counts per deg/s (±500 deg/s): hand-made quarter turns gave 50–62 [I]; a controlled rotation is needed to confirm.
 
 ## Bluetooth LE interface
 
@@ -78,7 +78,7 @@ A response is `[opcode, status, payload…]` with status `00` for success [V].
 |---------|-------|------------------|
 | Firmware version | `01` | ASCII string |
 | Battery | `02` | percent, u8 |
-| Stream control | `03 ff 01` start, `03 ff 00` stop | ack. `ff` presumably selects all streams [I] |
+| Stream control | `03 <mask> 01` start, `03 ff 00` stop | ack. Mask bits [V]: `01` EEG, `02` accelerometer + gyroscope, `10` contact, heart rate and SpO2. `ff` starts everything. The PPG bit is not yet identified (PPG takes ~6 s to start). |
 | Serial number | `06` | ASCII |
 | Time sync | `07` + Unix seconds (u32) | ack; packet timestamps become Unix seconds |
 | Device name | `09` | ASCII |
@@ -107,7 +107,7 @@ Timestamps are whole seconds: seconds since power-on until a time sync, Unix sec
 | Heart rate, SpO2 | 6 bytes: seconds u32, one byte of unknown meaning, value u8. |
 | Battery | 5 bytes: seconds u32, percent u8. Every 5 s. |
 | Contact | 5 bytes: seconds u32, state u8 (0–3). Every 2 s. |
-| Status | variable. `0e 00 00 00 00` about once a second; a block `07 12 …` ×3 + `07 11` every 60 s; `07 db`, `07 d0` shortly before the band powers itself off. Meanings beyond timing are unknown. |
+| Status | variable. `0e 00 00 00 00` about once a second. Every 60 s a block: `07 12 ff ee` + u16 that tracks battery voltage in mV (4039 → 4010 as charge fell 90 → 87 %) [I], `07 12 aa aa` + u16 (constant 37), `07 12 ff ff` + u16 (44–62, unknown), `07 11`. `07 db`, `07 d0` are sent when the band is about to power off, whether by timeout or by its power button [V]. |
 
 ## Behaviour worth knowing
 
@@ -132,15 +132,18 @@ Timestamps are whole seconds: seconds since power-on until a time sync, Unix sec
 - **Delivery jitter** [V]: Bluetooth delivery delay beyond the minimum had a 95th percentile of
   80–100 ms for EEG and motion and ~250–300 ms for PPG on macOS. Estimate sample times from sample
   counts, not arrival times (see `frenz-export`).
+- **Streams are aligned** [V]: taps on the band appear in the accelerometer and in the EEG within
+  ±20 ms (one motion sample) of each other in exported time. EEG packets are stamped ~40 ms later than
+  motion packets on the band's own whole-second clock, which is a labelling difference, not a delay.
 - **Measured sample rates** [V]: EEG 125.00 Hz, motion 50.00 Hz, PPG 25.00 Hz, each within 0.01 Hz over
   three minutes.
 
 ## Open questions
 
-- EEG microvolt scale; the per-sample flag and frame trailer.
+- EEG microvolt scale.
 - The four trailing bytes of motion packets; gyroscope scale.
 - Which optical channel is which LED, and why one is zero.
-- Meaning of the stream-control mask, the status messages and the IMU calibration report.
-- A small (~40 ms) constant offset between EEG and motion timing relative to the band's clock: real, or
-  a difference in how each packet type is stamped?
+- The PPG stream-control bit, the remaining status values and the IMU calibration report.
+- The EEG per-sample flag clusters in the last packet of each device second and the trailer is an
+  8-bit mask; both look timing-related, exact meaning unknown.
 - Behaviour on other firmware versions, sessions longer than an hour, and several bands at once.

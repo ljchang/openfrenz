@@ -62,8 +62,9 @@ fn index_and_time<T: PartialEq>(
                     if d == 1 {
                         Some(1)
                     } else if b == 0 && after_start {
+                        // Continuous only if data kept flowing; after a pause it is a new segment.
                         *restarts += 1;
-                        Some(1)
+                        (p.arrival - prev.arrival < 4.0 * packet_period + 0.5).then_some(1)
                     } else if d > 1 && p.arrival - prev.arrival < (d as f64 + 4.0) * packet_period + 1.0 {
                         *lost_frames += (d - 1) as u64;
                         Some(d)
@@ -81,8 +82,10 @@ fn index_and_time<T: PartialEq>(
                     (gap < 2.0 * packet_period.max(0.5) && (0..=1).contains(&clock_step) && !burst).then_some(1)
                 }
             };
+            // Any silence of more than a second starts a new segment, whatever the counters say.
+            let paused = p.arrival - prev.arrival > 1.0 + 2.0 * packet_period;
             match step {
-                Some(d) if !forced => n += d * prev.samples.len() as i64,
+                Some(d) if !forced && !paused => n += d * prev.samples.len() as i64,
                 _ => {
                     seg += 1;
                     n = 0;

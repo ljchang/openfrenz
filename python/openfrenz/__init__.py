@@ -9,4 +9,4 @@ from .dataset import WindowDataset
 from .session import SIGNALS, Session, find_sessions, load_session
 
 __all__ = ["SIGNALS", "Session", "WindowDataset", "find_sessions", "load_session"]
-__version__ = "0.1.0"
+__version__ = "0.2.0"

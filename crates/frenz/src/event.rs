@@ -97,6 +97,24 @@ pub enum Event {
         /// Host monotonic time (ns).
         mono_ns: i64,
     },
+    /// A reconnection attempt is starting.
+    Reconnecting {
+        /// Host monotonic time (ns).
+        mono_ns: i64,
+        /// Attempt number since the link was lost, from 1.
+        attempt: u32,
+    },
+    /// The link is back and the start sequence has been sent again. Data after this belongs to a
+    /// new segment.
+    Reconnected {
+        /// Host monotonic time (ns).
+        mono_ns: i64,
+    },
+    /// Reconnection was abandoned after the configured time.
+    ReconnectFailed {
+        /// Host monotonic time (ns).
+        mono_ns: i64,
+    },
 }
 
 /// Running counters for a connection. Every irregularity increments a counter here.
@@ -118,6 +136,8 @@ pub struct Health {
     pub battery_percent: Option<u8>,
     /// Last contact state reported.
     pub contact_state: Option<u8>,
+    /// Times the link was re-established after being lost.
+    pub reconnects: u64,
     /// Whether the link is up.
     pub connected: bool,
 }
@@ -134,6 +154,11 @@ pub struct Decoder {
 }
 
 impl Decoder {
+    /// Forgets the last EEG sequence number (after the link was re-established).
+    pub fn reset(&mut self) {
+        self.eeg_sequence = None;
+    }
+
     /// Decodes one notification. `last_start_ns` is the time of the most recent stream-start write.
     pub fn handle(
         &mut self,

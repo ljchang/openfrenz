@@ -29,7 +29,8 @@ $ frenz scan
 ## `frenz record <NAME>`
 
 Connects to the band with that name, starts all streams and writes everything it sends to one
-SQLite file. Stops on Ctrl-C, after `--seconds N`, or if the band disconnects.
+SQLite file. Stops on Ctrl-C or after `--seconds N`. If the connection is lost it reconnects
+automatically and continues in the same file.
 
 ```sh
 $ frenz record FRENZA12 --seconds 60
@@ -44,6 +45,8 @@ wrote recordings/FRENZA12-1800000000.sqlite: 1502 notifications, 9 writes, 5 mar
 |--------|---------|
 | `-o, --output FILE` | where to write (default `recordings/<name>-<unix time>.sqlite`); an existing file is never overwritten |
 | `--seconds N` | stop after N seconds |
+| `--no-reconnect` | stop when the connection is lost |
+| `--reconnect-seconds N` | give up reconnecting after N seconds (default 300) |
 | `--start standard\|none` | commands sent after connecting; `none` sends nothing (the band then only streams if a previous session left it streaming) |
 
 The status line printed every 5 seconds shows notification counts per stream and the health
@@ -55,7 +58,11 @@ counters:
   not decoded.
 - **contact**: electrode contact quality, 0 (none) to 3 (good).
 
-Messages such as "band reports no contact" and "power-off warning" appear as they happen.
+Messages such as "band reports no contact", "power-off warning", "connection lost" and
+"reconnected" appear as they happen. A reconnection is stored as `disconnected` / `reconnected`
+markers, and `export` puts the data after it in a new segment. The band switches itself off about
+half a minute after being taken off, so a reconnect succeeds only if it is still on or is switched on
+again in time.
 
 The file is safe against crashes and power loss: data is committed at least every 100 ms, and on a
 normal stop the file is checked and finalized (`integrity ok`).

@@ -36,6 +36,12 @@ enum Cmd {
         /// Start sequence sent after subscribing.
         #[arg(long, value_enum, default_value_t = Start::Standard)]
         start: Start,
+        /// Stop when the connection is lost instead of reconnecting.
+        #[arg(long)]
+        no_reconnect: bool,
+        /// Give up reconnecting after this many seconds.
+        #[arg(long, default_value_t = 300)]
+        reconnect_seconds: u64,
     },
     /// Decode a recording and report stream health.
     Summary {
@@ -85,7 +91,12 @@ async fn main() -> Result<()> {
             output,
             seconds,
             start,
-        } => record(name, output, seconds, start).await?,
+            no_reconnect,
+            reconnect_seconds,
+        } => {
+            let reconnect = (!no_reconnect).then(|| Duration::from_secs(reconnect_seconds));
+            record(name, output, seconds, start, reconnect).await?
+        }
         Cmd::Summary { file } => summary(&file)?,
         Cmd::Synth { output, seconds } => {
             frenz::synth::write_recording(&output, seconds)?;
@@ -108,11 +119,12 @@ fn default_output(name: &str) -> PathBuf {
 fn print_health(h: &Health) {
     let counts: Vec<String> = h.notifications.iter().map(|(k, v)| format!("{k}={v}")).collect();
     println!(
-        "  {} | gaps {} (frames lost {}), restarts {}, irregular EEG {}, decode errors {:?}, battery {:?}%, contact {:?}",
+        "  {} | gaps {} (frames lost {}), restarts {}, reconnects {}, irregular EEG {}, decode errors {:?}, battery {:?}%, contact {:?}",
         counts.join(" "),
         h.sequence_gaps,
         h.frames_lost,
         h.counter_restarts,
+        h.reconnects,
         h.irregular_eeg_frames,
         h.decode_errors,
         h.battery_percent,
@@ -120,7 +132,13 @@ fn print_health(h: &Health) {
     );
 }
 
-async fn record(name: String, output: Option<PathBuf>, seconds: Option<f64>, start: Start) -> Result<()> {
+async fn record(
+    name: String,
+    output: Option<PathBuf>,
+    seconds: Option<f64>,
+    start: Start,
+    reconnect: Option<Duration>,
+) -> Result<()> {
     let path = output.unwrap_or_else(|| default_output(&name));
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir)?;
@@ -134,6 +152,7 @@ async fn record(name: String, output: Option<PathBuf>, seconds: Option<f64>, sta
         &name,
         ConnectOptions {
             start,
+            reconnect,
             ..ConnectOptions::default()
         },
     )
@@ -162,7 +181,13 @@ async fn record(name: String, output: Option<PathBuf>, seconds: Option<f64>, sta
             () = until_deadline => break,
             _ = report.tick() => print_health(&band.health()),
             e = events.recv() => match e {
-                Ok(Event::Disconnected { .. }) => { println!("band disconnected"); break }
+                Ok(Event::Disconnected { .. }) => {
+                    println!("  ! connection lost");
+                    if reconnect.is_none() { break }
+                }
+                Ok(Event::Reconnecting { attempt, .. }) => println!("  reconnecting (attempt {attempt}) …"),
+                Ok(Event::Reconnected { .. }) => println!("  reconnected; streaming again"),
+                Ok(Event::ReconnectFailed { .. }) => { println!("  ! gave up reconnecting"); break }
                 Ok(Event::SequenceGap { expected, received, .. }) => println!("  ! EEG gap: expected {expected}, got {received}"),
                 Ok(Event::OffHead { .. }) => println!("  ! band reports no contact (it powers off ~33 s later)"),
                 Ok(Event::OnHead { .. }) => println!("  contact restored"),

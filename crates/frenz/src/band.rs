@@ -1,18 +1,20 @@
 //! Discovering, connecting to, and commanding a band.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
+use btleplug::api::ValueNotification;
 use btleplug::api::{
     Central, CentralEvent, CharPropFlags, Characteristic as BleCharacteristic, Manager as _, Peripheral as _,
     ScanFilter, WriteType,
 };
-use btleplug::platform::{Adapter, Manager, Peripheral};
+use btleplug::platform::{Adapter, Manager, Peripheral, PeripheralId};
 use frenz_proto::{Characteristic, Command, Packet, Response, ResponseBody};
-use futures::StreamExt;
-use tokio::sync::{broadcast, mpsc};
+use futures::{Stream, StreamExt};
+use tokio::sync::{RwLock, broadcast, mpsc};
 use tokio::task::JoinHandle;
 
 use crate::clock::{mono_ns, wall_ns};
@@ -51,6 +53,10 @@ pub struct ConnectOptions {
     pub start: StartSequence,
     /// How long to wait for a command response.
     pub command_timeout: Duration,
+    /// After the link is lost, keep trying to reconnect for this long (`None`: do not reconnect).
+    /// The band powers itself off about 33 s after being taken off, so a reconnect only succeeds
+    /// if it is still on (or is switched on again) within this time.
+    pub reconnect: Option<Duration>,
 }
 
 impl Default for ConnectOptions {
@@ -59,6 +65,7 @@ impl Default for ConnectOptions {
             scan_timeout: Duration::from_secs(30),
             start: StartSequence::default(),
             command_timeout: Duration::from_secs(2),
+            reconnect: Some(Duration::from_secs(300)),
         }
     }
 }
@@ -110,50 +117,79 @@ pub async fn scan(duration: Duration) -> Result<Vec<Discovered>, Error> {
     Ok(found)
 }
 
-/// A connected band.
-///
-/// Dropping a `Band` stops its background tasks but does not send the stop sequence; call
-/// [`Band::stop`] for an orderly end.
-pub struct Band {
+/// With no notification at all for this long, the link is checked and treated as lost if down.
+const STALL: Duration = Duration::from_secs(10);
+
+type Notifications = Pin<Box<dyn Stream<Item = ValueNotification> + Send>>;
+type CentralEvents = Pin<Box<dyn Stream<Item = CentralEvent> + Send>>;
+
+struct Link {
     peripheral: Peripheral,
     characteristics: HashMap<Characteristic, BleCharacteristic>,
-    events: broadcast::Sender<Event>,
-    raw: broadcast::Sender<RawRecord>,
-    health: Arc<Mutex<Health>>,
-    last_start_ns: Arc<AtomicI64>,
-    info: BandInfo,
-    options: ConnectOptions,
-    tasks: Vec<JoinHandle<()>>,
-    /// Receiver created before subscribing, so the first recorder sees everything since connect.
-    initial_raw: Mutex<Option<broadcast::Receiver<RawRecord>>>,
 }
 
-impl Band {
-    /// Scans for a band advertising `name`, connects, subscribes to all of its streams and runs the
-    /// configured start sequence.
-    pub async fn connect(name: &str, options: ConnectOptions) -> Result<Self, Error> {
+enum ToDecoder {
+    Notification(i64, Characteristic, Arc<[u8]>),
+    /// The link was re-established: sequence tracking starts afresh.
+    Reset,
+}
+
+/// State shared by the handle and its background tasks.
+struct Shared {
+    name: String,
+    options: ConnectOptions,
+    events: broadcast::Sender<Event>,
+    raw: broadcast::Sender<RawRecord>,
+    health: Mutex<Health>,
+    last_start_ns: AtomicI64,
+    info: Mutex<BandInfo>,
+    link: RwLock<Option<Link>>,
+    closing: AtomicBool,
+}
+
+impl Shared {
+    fn mark(&self, label: &str) {
+        let _ = self.raw.send(RawRecord::Marker {
+            mono_ns: mono_ns(),
+            wall_ns: wall_ns(),
+            label: label.to_owned(),
+        });
+    }
+
+    fn with_health<R>(&self, f: impl FnOnce(&mut Health) -> R) -> R {
+        f(&mut self.health.lock().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    /// Scans for the band, connects, and subscribes to its streams.
+    async fn establish(&self, scan_timeout: Duration) -> Result<(Notifications, CentralEvents, PeripheralId), Error> {
         let adapter = first_adapter().await?;
         adapter.start_scan(ScanFilter::default()).await?;
-        let deadline = tokio::time::Instant::now() + options.scan_timeout;
+        let deadline = tokio::time::Instant::now() + scan_timeout;
         let peripheral = loop {
             if let Some((_, p)) = frenz_peripherals(&adapter)
                 .await?
                 .into_iter()
-                .find(|(d, _)| d.name == name)
+                .find(|(d, _)| d.name == self.name)
             {
                 break p;
             }
             if tokio::time::Instant::now() >= deadline {
                 adapter.stop_scan().await.ok();
                 return Err(Error::NotFound {
-                    name: name.to_owned(),
-                    timeout: options.scan_timeout,
+                    name: self.name.clone(),
+                    timeout: scan_timeout,
                 });
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
         };
         adapter.stop_scan().await.ok();
-        peripheral.connect().await?;
+        let connect_timeout = Duration::from_secs(15);
+        tokio::time::timeout(connect_timeout, peripheral.connect())
+            .await
+            .map_err(|_| Error::NotFound {
+                name: self.name.clone(),
+                timeout: connect_timeout,
+            })??;
         peripheral.discover_services().await?;
 
         let mut characteristics = HashMap::new();
@@ -173,202 +209,33 @@ impl Band {
                 return Err(Error::MissingCharacteristic(required.name()));
             }
         }
-
-        let (events, _) = broadcast::channel(CHANNEL_CAPACITY);
-        let (raw, initial_raw) = broadcast::channel(CHANNEL_CAPACITY);
-        let health = Arc::new(Mutex::new(Health {
-            connected: true,
-            ..Health::default()
-        }));
-        let last_start_ns = Arc::new(AtomicI64::new(i64::MIN / 2));
-        let mut band = Self {
-            peripheral,
-            characteristics,
-            events,
-            raw,
-            health,
-            last_start_ns,
-            info: BandInfo {
-                name: name.to_owned(),
-                gatt,
-                ..BandInfo::default()
-            },
-            options,
-            tasks: Vec::new(),
-            initial_raw: Mutex::new(Some(initial_raw)),
-        };
-        band.spawn_pipeline(&adapter).await?;
-        band.mark("connected");
+        // Obtain the notification stream before subscribing so no early notification is missed.
+        let notifications = peripheral.notifications().await?;
+        let central_events = adapter.events().await?;
+        let id = peripheral.id();
+        self.info.lock().unwrap_or_else(PoisonError::into_inner).gatt = gatt;
+        self.mark("connected");
         // Subscribe only to the band's own notify characteristics; other services drop the link.
         for c in Characteristic::NOTIFY {
-            if let Some(ble) = band.characteristics.get(&c)
+            if let Some(ble) = characteristics.get(&c)
                 && ble.properties.contains(CharPropFlags::NOTIFY)
             {
-                band.peripheral.subscribe(ble).await?;
+                peripheral.subscribe(ble).await?;
             }
         }
-        band.mark("subscribed_all");
-        band.run_start_sequence().await?;
-        Ok(band)
-    }
-
-    /// Starts the notification reader, decoder and disconnect watcher.
-    async fn spawn_pipeline(&mut self, adapter: &Adapter) -> Result<(), Error> {
-        // Obtain the notification stream before subscribing so no early notification is missed.
-        let mut notifications = self.peripheral.notifications().await?;
-        let (to_decoder, mut decoder_rx) = mpsc::unbounded_channel::<(i64, Characteristic, Arc<[u8]>)>();
-        let raw = self.raw.clone();
-        let events = self.events.clone();
-        self.tasks.push(tokio::spawn(async move {
-            // Arrival path: timestamp, copy, hand off. No parsing, no locks, no I/O.
-            while let Some(n) = notifications.next().await {
-                let mono = mono_ns();
-                let wall = wall_ns();
-                let Some(characteristic) = Characteristic::from_uuid(n.uuid.as_u128()) else {
-                    continue;
-                };
-                let bytes: Arc<[u8]> = n.value.into();
-                let _ = raw.send(RawRecord::Notification {
-                    mono_ns: mono,
-                    wall_ns: wall,
-                    characteristic,
-                    bytes: bytes.clone(),
-                });
-                if to_decoder.send((mono, characteristic, bytes)).is_err() {
-                    break;
-                }
-            }
-            let _ = events.send(Event::Disconnected { mono_ns: mono_ns() });
-        }));
-
-        let events = self.events.clone();
-        let health = self.health.clone();
-        let last_start = self.last_start_ns.clone();
-        self.tasks.push(tokio::spawn(async move {
-            let mut decoder = Decoder::default();
-            let mut out = Vec::new();
-            while let Some((mono, characteristic, bytes)) = decoder_rx.recv().await {
-                {
-                    let mut h = health.lock().unwrap_or_else(PoisonError::into_inner);
-                    decoder.handle(
-                        mono,
-                        characteristic,
-                        &bytes,
-                        last_start.load(Ordering::Relaxed),
-                        &mut h,
-                        &mut out,
-                    );
-                }
-                for event in out.drain(..) {
-                    let _ = events.send(event);
-                }
-            }
-        }));
-
-        let mut central_events = adapter.events().await?;
-        let id = self.peripheral.id();
-        let events = self.events.clone();
-        let raw = self.raw.clone();
-        let health = self.health.clone();
-        self.tasks.push(tokio::spawn(async move {
-            while let Some(e) = central_events.next().await {
-                if matches!(e, CentralEvent::DeviceDisconnected(ref d) if *d == id) {
-                    health.lock().unwrap_or_else(PoisonError::into_inner).connected = false;
-                    let _ = raw.send(RawRecord::Marker {
-                        mono_ns: mono_ns(),
-                        wall_ns: wall_ns(),
-                        label: "disconnected".into(),
-                    });
-                    let _ = events.send(Event::Disconnected { mono_ns: mono_ns() });
-                    break;
-                }
-            }
-        }));
-        Ok(())
-    }
-
-    async fn run_start_sequence(&mut self) -> Result<(), Error> {
-        let now = u32::try_from(wall_ns() / 1_000_000_000).unwrap_or(u32::MAX);
-        let pause = Duration::from_millis(100);
-        match self.options.start {
-            StartSequence::None => return Ok(()),
-            StartSequence::Standard => {
-                self.query_firmware().await;
-                self.send(Command::TimeSync(now)).await?;
-                self.send(Command::SetPromptVolume(0)).await?;
-                tokio::time::sleep(pause).await;
-                self.send(Command::HeartRatePeriodic(true)).await?;
-                tokio::time::sleep(pause).await;
-                self.send(Command::OnConnected).await?;
-                self.send(Command::StreamControl {
-                    mask: 0xff,
-                    enable: true,
-                })
-                .await?;
-                tokio::time::sleep(pause).await;
-            }
-        }
-        if let Ok(r) = self.request(Command::GetImuCalibration).await
-            && let Ok(ResponseBody::ImuCalibration { std, diff }) = r.body()
-        {
-            self.info.imu_calibration = Some((std, diff));
-        }
-        self.mark("start_sequence_sent");
-        Ok(())
-    }
-
-    async fn query_firmware(&mut self) {
-        if let Ok(r) = self.request(Command::GetFirmwareVersion).await
-            && let Ok(ResponseBody::FirmwareVersion(v)) = r.body()
-        {
-            self.info.firmware = Some(v.to_owned());
-        }
-    }
-
-    /// Facts about the band gathered at connect.
-    pub fn info(&self) -> &BandInfo {
-        &self.info
-    }
-
-    /// Snapshot of the connection's counters.
-    pub fn health(&self) -> Health {
-        self.health.lock().unwrap_or_else(PoisonError::into_inner).clone()
-    }
-
-    /// Subscribes to decoded events. A subscriber that falls more than ~16k events behind receives
-    /// `RecvError::Lagged` with the number of events it missed.
-    pub fn subscribe(&self) -> broadcast::Receiver<Event> {
-        self.events.subscribe()
-    }
-
-    /// Subscribes to raw records (notifications, writes, markers) in arrival order, from now on.
-    pub fn subscribe_raw(&self) -> broadcast::Receiver<RawRecord> {
-        self.raw.subscribe()
-    }
-
-    /// Like [`Band::subscribe_raw`], but the first call receives every record since the connection
-    /// was set up (the connect markers, start sequence and first notifications). Later calls
-    /// subscribe from now on. Recorders use this so a recording is complete.
-    pub fn subscribe_raw_from_start(&self) -> broadcast::Receiver<RawRecord> {
-        self.initial_raw
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take()
-            .unwrap_or_else(|| self.raw.subscribe())
-    }
-
-    /// Adds a marker to the raw record stream.
-    pub fn mark(&self, label: &str) {
-        let _ = self.raw.send(RawRecord::Marker {
-            mono_ns: mono_ns(),
-            wall_ns: wall_ns(),
-            label: label.to_owned(),
+        self.mark("subscribed_all");
+        *self.link.write().await = Some(Link {
+            peripheral,
+            characteristics,
         });
+        self.with_health(|h| h.connected = true);
+        Ok((notifications, central_events, id))
     }
 
-    /// Writes a command without waiting for a response.
-    pub async fn send(&self, command: Command) -> Result<(), Error> {
-        let rx = self
+    async fn send(&self, command: Command) -> Result<(), Error> {
+        let link = self.link.read().await;
+        let link = link.as_ref().ok_or(Error::Disconnected)?;
+        let rx = link
             .characteristics
             .get(&Characteristic::CommandRx)
             .ok_or(Error::MissingCharacteristic("command_rx"))?;
@@ -376,7 +243,7 @@ impl Band {
         if matches!(command, Command::StreamControl { enable: true, .. }) {
             self.last_start_ns.store(mono_ns(), Ordering::Relaxed);
         }
-        let result = self
+        let result = link
             .peripheral
             .write(rx, encoded.as_bytes(), WriteType::WithoutResponse)
             .await;
@@ -390,8 +257,7 @@ impl Band {
         Ok(result?)
     }
 
-    /// Writes a command and waits for the response with the same opcode.
-    pub async fn request(&self, command: Command) -> Result<Response, Error> {
+    async fn request(&self, command: Command) -> Result<Response, Error> {
         let mut events = self.events.subscribe();
         self.send(command).await?;
         let opcode = command.opcode();
@@ -425,6 +291,254 @@ impl Band {
         }
     }
 
+    async fn run_start_sequence(&self) -> Result<(), Error> {
+        let now = u32::try_from(wall_ns() / 1_000_000_000).unwrap_or(u32::MAX);
+        let pause = Duration::from_millis(100);
+        match self.options.start {
+            StartSequence::None => return Ok(()),
+            StartSequence::Standard => {
+                if let Ok(r) = self.request(Command::GetFirmwareVersion).await
+                    && let Ok(ResponseBody::FirmwareVersion(v)) = r.body()
+                {
+                    self.info.lock().unwrap_or_else(PoisonError::into_inner).firmware = Some(v.to_owned());
+                }
+                self.send(Command::TimeSync(now)).await?;
+                self.send(Command::SetPromptVolume(0)).await?;
+                tokio::time::sleep(pause).await;
+                self.send(Command::HeartRatePeriodic(true)).await?;
+                tokio::time::sleep(pause).await;
+                self.send(Command::OnConnected).await?;
+                self.send(Command::StreamControl {
+                    mask: 0xff,
+                    enable: true,
+                })
+                .await?;
+                tokio::time::sleep(pause).await;
+            }
+        }
+        if let Ok(r) = self.request(Command::GetImuCalibration).await
+            && let Ok(ResponseBody::ImuCalibration { std, diff }) = r.body()
+        {
+            self.info.lock().unwrap_or_else(PoisonError::into_inner).imu_calibration = Some((std, diff));
+        }
+        self.mark("start_sequence_sent");
+        Ok(())
+    }
+}
+
+/// Forwards notifications until the link is lost; then, if enabled, reconnects and carries on.
+async fn supervise(
+    shared: Arc<Shared>,
+    mut notifications: Notifications,
+    mut central_events: CentralEvents,
+    mut id: PeripheralId,
+    to_decoder: mpsc::UnboundedSender<ToDecoder>,
+) {
+    loop {
+        // Arrival path: timestamp, copy, hand off. No parsing, no blocking I/O.
+        loop {
+            tokio::select! {
+                n = notifications.next() => {
+                    let Some(n) = n else { break };
+                    let (mono, wall) = (mono_ns(), wall_ns());
+                    let Some(characteristic) = Characteristic::from_uuid(n.uuid.as_u128()) else { continue };
+                    let bytes: Arc<[u8]> = n.value.into();
+                    let _ = shared.raw.send(RawRecord::Notification { mono_ns: mono, wall_ns: wall, characteristic, bytes: bytes.clone() });
+                    if to_decoder.send(ToDecoder::Notification(mono, characteristic, bytes)).is_err() {
+                        return;
+                    }
+                }
+                e = central_events.next() => match e {
+                    Some(CentralEvent::DeviceDisconnected(d)) if d == id => break,
+                    Some(_) => {}
+                    None => break,
+                },
+                () = tokio::time::sleep(STALL) => {
+                    let link = shared.link.read().await;
+                    let alive = match link.as_ref() {
+                        Some(l) => l.peripheral.is_connected().await.unwrap_or(false),
+                        None => false,
+                    };
+                    if !alive { break }
+                }
+            }
+        }
+        if let Some(link) = shared.link.write().await.take() {
+            link.peripheral.disconnect().await.ok();
+        }
+        shared.with_health(|h| h.connected = false);
+        shared.mark("disconnected");
+        let _ = shared.events.send(Event::Disconnected { mono_ns: mono_ns() });
+        let Some(window) = shared
+            .options
+            .reconnect
+            .filter(|_| !shared.closing.load(Ordering::Relaxed))
+        else {
+            return;
+        };
+
+        let deadline = tokio::time::Instant::now() + window;
+        let mut attempt = 0u32;
+        loop {
+            if shared.closing.load(Ordering::Relaxed) {
+                return;
+            }
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                shared.mark("reconnect_gave_up");
+                let _ = shared.events.send(Event::ReconnectFailed { mono_ns: mono_ns() });
+                return;
+            }
+            attempt += 1;
+            let _ = shared.events.send(Event::Reconnecting {
+                mono_ns: mono_ns(),
+                attempt,
+            });
+            match shared.establish(remaining.min(Duration::from_secs(10))).await {
+                Ok((n, c, i)) => {
+                    notifications = n;
+                    central_events = c;
+                    id = i;
+                    break;
+                }
+                Err(_) => {
+                    let backoff = Duration::from_secs(u64::from(attempt.min(5)));
+                    tokio::time::sleep(backoff.min(deadline.saturating_duration_since(tokio::time::Instant::now())))
+                        .await;
+                }
+            }
+        }
+        let _ = to_decoder.send(ToDecoder::Reset);
+        shared.with_health(|h| h.reconnects += 1);
+        shared.mark("reconnected");
+        // The start sequence waits for responses, which this task delivers, so run it alongside.
+        let again = shared.clone();
+        tokio::spawn(async move {
+            again.run_start_sequence().await.ok();
+            let _ = again.events.send(Event::Reconnected { mono_ns: mono_ns() });
+        });
+    }
+}
+
+/// A connected band.
+///
+/// If the link drops, the band is reconnected automatically (see [`ConnectOptions::reconnect`]);
+/// subscribers, recorders and this handle keep working across the interruption. Dropping a `Band`
+/// stops its background tasks but does not send the stop sequence; call [`Band::stop`] for an
+/// orderly end.
+pub struct Band {
+    shared: Arc<Shared>,
+    tasks: Vec<JoinHandle<()>>,
+    /// Receiver created before subscribing, so the first recorder sees everything since connect.
+    initial_raw: Mutex<Option<broadcast::Receiver<RawRecord>>>,
+}
+
+impl Band {
+    /// Scans for a band advertising `name`, connects, subscribes to all of its streams and runs the
+    /// configured start sequence.
+    pub async fn connect(name: &str, options: ConnectOptions) -> Result<Self, Error> {
+        let (events, _) = broadcast::channel(CHANNEL_CAPACITY);
+        let (raw, initial_raw) = broadcast::channel(CHANNEL_CAPACITY);
+        let scan_timeout = options.scan_timeout;
+        let shared = Arc::new(Shared {
+            name: name.to_owned(),
+            options,
+            events,
+            raw,
+            health: Mutex::new(Health::default()),
+            last_start_ns: AtomicI64::new(i64::MIN / 2),
+            info: Mutex::new(BandInfo {
+                name: name.to_owned(),
+                ..BandInfo::default()
+            }),
+            link: RwLock::new(None),
+            closing: AtomicBool::new(false),
+        });
+        let (notifications, central_events, id) = shared.establish(scan_timeout).await?;
+
+        let (to_decoder, mut decoder_rx) = mpsc::unbounded_channel::<ToDecoder>();
+        let mut tasks = Vec::new();
+        let decoding = shared.clone();
+        tasks.push(tokio::spawn(async move {
+            let mut decoder = Decoder::default();
+            let mut out = Vec::new();
+            while let Some(message) = decoder_rx.recv().await {
+                match message {
+                    ToDecoder::Reset => decoder.reset(),
+                    ToDecoder::Notification(mono, characteristic, bytes) => {
+                        let last_start = decoding.last_start_ns.load(Ordering::Relaxed);
+                        decoding.with_health(|h| decoder.handle(mono, characteristic, &bytes, last_start, h, &mut out));
+                        for event in out.drain(..) {
+                            let _ = decoding.events.send(event);
+                        }
+                    }
+                }
+            }
+        }));
+        tasks.push(tokio::spawn(supervise(
+            shared.clone(),
+            notifications,
+            central_events,
+            id,
+            to_decoder,
+        )));
+        let band = Self {
+            shared,
+            tasks,
+            initial_raw: Mutex::new(Some(initial_raw)),
+        };
+        band.shared.run_start_sequence().await?;
+        Ok(band)
+    }
+
+    /// Facts about the band gathered at connect.
+    pub fn info(&self) -> BandInfo {
+        self.shared.info.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    /// Snapshot of the connection's counters.
+    pub fn health(&self) -> Health {
+        self.shared.with_health(|h| h.clone())
+    }
+
+    /// Subscribes to decoded events. A subscriber that falls more than ~16k events behind receives
+    /// `RecvError::Lagged` with the number of events it missed.
+    pub fn subscribe(&self) -> broadcast::Receiver<Event> {
+        self.shared.events.subscribe()
+    }
+
+    /// Subscribes to raw records (notifications, writes, markers) in arrival order, from now on.
+    pub fn subscribe_raw(&self) -> broadcast::Receiver<RawRecord> {
+        self.shared.raw.subscribe()
+    }
+
+    /// Like [`Band::subscribe_raw`], but the first call receives every record since the connection
+    /// was set up (the connect markers, start sequence and first notifications). Later calls
+    /// subscribe from now on. Recorders use this so a recording is complete.
+    pub fn subscribe_raw_from_start(&self) -> broadcast::Receiver<RawRecord> {
+        self.initial_raw
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+            .unwrap_or_else(|| self.shared.raw.subscribe())
+    }
+
+    /// Adds a marker to the raw record stream.
+    pub fn mark(&self, label: &str) {
+        self.shared.mark(label);
+    }
+
+    /// Writes a command without waiting for a response. Fails with [`Error::Disconnected`] while
+    /// the link is down.
+    pub async fn send(&self, command: Command) -> Result<(), Error> {
+        self.shared.send(command).await
+    }
+
+    /// Writes a command and waits for the response with the same opcode.
+    pub async fn request(&self, command: Command) -> Result<Response, Error> {
+        self.shared.request(command).await
+    }
+
     /// Queries the battery percentage.
     pub async fn battery(&self) -> Result<u8, Error> {
         match self.request(Command::GetBattery).await?.body() {
@@ -436,8 +550,9 @@ impl Band {
         }
     }
 
-    /// Stops streaming, sends the session-end notice, and disconnects.
+    /// Stops streaming, sends the session-end notice, and disconnects. No reconnection follows.
     pub async fn stop(mut self) -> Result<Health, Error> {
+        self.shared.closing.store(true, Ordering::Relaxed);
         if self.health().connected {
             self.send(Command::StreamControl {
                 mask: 0xff,
@@ -449,7 +564,9 @@ impl Band {
             self.send(Command::EndSession).await.ok();
             tokio::time::sleep(Duration::from_millis(500)).await;
             self.mark("stop_sequence_sent");
-            self.peripheral.disconnect().await.ok();
+            if let Some(link) = self.shared.link.write().await.take() {
+                link.peripheral.disconnect().await.ok();
+            }
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
         for task in self.tasks.drain(..) {
@@ -461,6 +578,7 @@ impl Band {
 
 impl Drop for Band {
     fn drop(&mut self) {
+        self.shared.closing.store(true, Ordering::Relaxed);
         for task in &self.tasks {
             task.abort();
         }

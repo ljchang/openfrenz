@@ -47,3 +47,18 @@ fn synthetic_recording_exports_with_accurate_clocks() {
     assert_eq!(meta["format"], frenz_export::FORMAT);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn a_pause_starts_a_new_segment_even_when_the_counter_continues() {
+    let dir = temp("pause");
+    let recording = dir.join("paused.sqlite");
+    frenz::synth::write_recording_with_pause(&recording, 60, Some((20.0, 5.0))).unwrap();
+    let session = frenz_export::read(&recording).unwrap();
+    let fits = session.meta["streams"]["eeg"]["segments"].as_array().unwrap();
+    assert_eq!(fits.len(), 2, "pause must split the EEG into two segments");
+    for fit in fits {
+        assert!((fit["rate_hz"].as_f64().unwrap() - 125.0).abs() < 0.3);
+        assert!(fit["jitter_p95_s"].as_f64().unwrap() < 0.2);
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}

@@ -73,8 +73,9 @@ while let Ok(event) = events.recv().await {
 ## Status and limits
 
 Tested with one band (firmware `X8.2.2_1.1.19`) on macOS. Linux and Windows build and pass the
-hardware-free tests in CI but have not been tried with a band. Not yet implemented: automatic
-reconnection, audio and stimulation commands, and conversion of EEG counts to microvolts (the scale
+hardware-free tests in CI but have not been tried with a band. The live Bluetooth path (including
+automatic reconnection) is tested by hand, not in CI. Not yet implemented: audio and stimulation
+commands, and conversion of EEG counts to microvolts (the scale
 is not yet known). Recordings contain physiological data: keep them out of version control.
 
 ## Development

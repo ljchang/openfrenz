@@ -40,6 +40,12 @@ fn i24(v: i32) -> [u8; 3] {
 /// Streams have their real rates and packet layouts; EEG carries a 10 Hz rhythm on the comb
 /// channels plus noise; arrival times include one-sided delivery jitter like a real link.
 pub fn write_recording(path: &Path, seconds: u32) -> Result<(), Error> {
+    write_recording_with_pause(path, seconds, None)
+}
+
+/// Like [`write_recording`], with an optional pause `(start_s, length_s)` during which no EEG is
+/// sent, after which the EEG sequence counter simply continues (as after a stream stop/start).
+pub fn write_recording_with_pause(path: &Path, seconds: u32, pause: Option<(f64, f64)>) -> Result<(), Error> {
     OpenOptions::new().write(true).create_new(true).open(path)?;
     let mut db = Connection::open(path)?;
     db.execute_batch(SCHEMA)?;
@@ -104,7 +110,8 @@ pub fn write_recording(path: &Path, seconds: u32) -> Result<(), Error> {
                     p[at..at + 3].copy_from_slice(&i24(*v as i32));
                 }
             }
-            rows.push((t_last + jitter(&mut rng, 0.12), Characteristic::Eeg, p));
+            let shift = pause.filter(|(at, _)| t_last >= *at).map_or(0.0, |(_, len)| len);
+            rows.push((t_last + shift + jitter(&mut rng, 0.12), Characteristic::Eeg, p));
         }
         for (c, gravity) in [
             (Characteristic::Accelerometer, [-15_000.0, -4_000.0, 5_000.0]),
