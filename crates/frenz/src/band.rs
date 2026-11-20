@@ -145,6 +145,8 @@ struct Shared {
     info: Mutex<BandInfo>,
     link: RwLock<Option<Link>>,
     closing: AtomicBool,
+    /// Identity of the device first connected to; reconnection accepts only this device.
+    device: Mutex<Option<PeripheralId>>,
 }
 
 impl Shared {
@@ -165,11 +167,14 @@ impl Shared {
         let adapter = first_adapter().await?;
         adapter.start_scan(ScanFilter::default()).await?;
         let deadline = tokio::time::Instant::now() + scan_timeout;
+        // After the first connection, only the same physical device is accepted: a name can be
+        // advertised by anything.
+        let pinned = self.device.lock().unwrap_or_else(PoisonError::into_inner).clone();
         let peripheral = loop {
             if let Some((_, p)) = frenz_peripherals(&adapter)
                 .await?
                 .into_iter()
-                .find(|(d, _)| d.name == self.name)
+                .find(|(d, p)| d.name == self.name && pinned.as_ref().is_none_or(|id| *id == p.id()))
             {
                 break p;
             }
@@ -213,6 +218,10 @@ impl Shared {
         let notifications = peripheral.notifications().await?;
         let central_events = adapter.events().await?;
         let id = peripheral.id();
+        self.device
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_or_insert_with(|| id.clone());
         self.info.lock().unwrap_or_else(PoisonError::into_inner).gatt = gatt;
         self.mark("connected");
         // Subscribe only to the band's own notify characteristics; other services drop the link.
@@ -453,6 +462,7 @@ impl Band {
             }),
             link: RwLock::new(None),
             closing: AtomicBool::new(false),
+            device: Mutex::new(None),
         });
         let (notifications, central_events, id) = shared.establish(scan_timeout).await?;
 

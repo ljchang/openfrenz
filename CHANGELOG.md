@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1
+
+- Reconnection accepts only the same physical device as the original connection, not any device
+  advertising the same name.
+
 ## 0.2.0
 
 - **Automatic reconnection.** If the link is lost, `Band` reconnects, re-runs the start sequence and
