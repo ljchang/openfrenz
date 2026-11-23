@@ -23,11 +23,28 @@ Streams: EEG (4 channels, 125 Hz), accelerometer and gyroscope (50 Hz), PPG (25 
 SpO2, battery and electrode-contact quality. What is known about the hardware and its Bluetooth
 interface is written up in [docs/HARDWARE.md](docs/HARDWARE.md).
 
-## Quick start
+## Install
+
+**Command-line tool.** Needs [Rust](https://rustup.rs) 1.88 or newer.
 
 ```sh
 cargo install frenz-cli          # installs the `frenz` command
+```
 
+- macOS: the terminal application needs Bluetooth permission (System Settings → Privacy & Security →
+  Bluetooth); macOS asks the first time you scan.
+- Linux: install the build packages first (`sudo apt-get install libdbus-1-dev pkg-config` on
+  Debian/Ubuntu), and BlueZ must be running.
+
+**Python package.** Needs Python 3.10 or newer.
+
+```sh
+pip install openfrenz            # or: uv add openfrenz
+```
+
+## Quick start
+
+```sh
 frenz scan                       # find bands nearby
 frenz record FRENZA12            # record until Ctrl-C (use the name `scan` printed)
 frenz summary recordings/FRENZA12-1800000000.sqlite

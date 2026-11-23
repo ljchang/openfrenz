@@ -1,6 +1,7 @@
 //! Discovering, connecting to, and commanding a band.
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -14,7 +15,7 @@ use btleplug::api::{
 use btleplug::platform::{Adapter, Manager, Peripheral, PeripheralId};
 use frenz_proto::{Characteristic, Command, Packet, Response, ResponseBody};
 use futures::{Stream, StreamExt};
-use tokio::sync::{RwLock, broadcast, mpsc};
+use tokio::sync::{Notify, RwLock, broadcast, mpsc};
 use tokio::task::JoinHandle;
 
 use crate::clock::{mono_ns, wall_ns};
@@ -57,6 +58,8 @@ pub struct ConnectOptions {
     /// The band powers itself off about 33 s after being taken off, so a reconnect only succeeds
     /// if it is still on (or is switched on again) within this time.
     pub reconnect: Option<Duration>,
+    /// Characteristics to subscribe to. The default is every notify characteristic of the band.
+    pub notify: Vec<Characteristic>,
 }
 
 impl Default for ConnectOptions {
@@ -66,6 +69,7 @@ impl Default for ConnectOptions {
             start: StartSequence::default(),
             command_timeout: Duration::from_secs(2),
             reconnect: Some(Duration::from_secs(300)),
+            notify: Characteristic::NOTIFY.to_vec(),
         }
     }
 }
@@ -132,6 +136,11 @@ enum ToDecoder {
     Notification(i64, Characteristic, Arc<[u8]>),
     /// The link was re-established: sequence tracking starts afresh.
     Reset,
+    /// A replay reached a recorded command that started the streams, at this (replay) time.
+    StreamStart(i64),
+    /// A replay reached its end. Sent through the decoder so the disconnect is reported after
+    /// every notification queued before it.
+    ReplayEnded,
 }
 
 /// State shared by the handle and its background tasks.
@@ -147,9 +156,33 @@ struct Shared {
     closing: AtomicBool,
     /// Identity of the device first connected to; reconnection accepts only this device.
     device: Mutex<Option<PeripheralId>>,
+    /// Signalled by the first subscription; a replay waits for it so no event is missed.
+    subscribed: Notify,
 }
 
 impl Shared {
+    fn new(name: &str, options: ConnectOptions) -> (Arc<Self>, broadcast::Receiver<RawRecord>) {
+        let (events, _) = broadcast::channel(CHANNEL_CAPACITY);
+        let (raw, initial_raw) = broadcast::channel(CHANNEL_CAPACITY);
+        let shared = Arc::new(Self {
+            name: name.to_owned(),
+            options,
+            events,
+            raw,
+            health: Mutex::new(Health::default()),
+            last_start_ns: AtomicI64::new(i64::MIN / 2),
+            info: Mutex::new(BandInfo {
+                name: name.to_owned(),
+                ..BandInfo::default()
+            }),
+            link: RwLock::new(None),
+            closing: AtomicBool::new(false),
+            device: Mutex::new(None),
+            subscribed: Notify::new(),
+        });
+        (shared, initial_raw)
+    }
+
     fn mark(&self, label: &str) {
         let _ = self.raw.send(RawRecord::Marker {
             mono_ns: mono_ns(),
@@ -225,8 +258,8 @@ impl Shared {
         self.info.lock().unwrap_or_else(PoisonError::into_inner).gatt = gatt;
         self.mark("connected");
         // Subscribe only to the band's own notify characteristics; other services drop the link.
-        for c in Characteristic::NOTIFY {
-            if let Some(ble) = characteristics.get(&c)
+        for c in &self.options.notify {
+            if let Some(ble) = characteristics.get(c)
                 && ble.properties.contains(CharPropFlags::NOTIFY)
             {
                 peripheral.subscribe(ble).await?;
@@ -330,6 +363,8 @@ impl Shared {
         {
             self.info.lock().unwrap_or_else(PoisonError::into_inner).imu_calibration = Some((std, diff));
         }
+        // Without this the band powers itself off 10 minutes after the stream start.
+        self.send(Command::StartSession).await?;
         self.mark("start_sequence_sent");
         Ok(())
     }
@@ -429,6 +464,187 @@ async fn supervise(
     }
 }
 
+/// Starts the task that decodes notifications into events and keeps the health counters.
+fn spawn_decoder(shared: Arc<Shared>) -> (mpsc::UnboundedSender<ToDecoder>, JoinHandle<()>) {
+    let (to_decoder, mut decoder_rx) = mpsc::unbounded_channel::<ToDecoder>();
+    let task = tokio::spawn(async move {
+        let mut decoder = Decoder::default();
+        let mut out = Vec::new();
+        while let Some(message) = decoder_rx.recv().await {
+            match message {
+                ToDecoder::Reset => decoder.reset(),
+                ToDecoder::StreamStart(mono) => shared.last_start_ns.store(mono, Ordering::Relaxed),
+                ToDecoder::ReplayEnded => {
+                    shared.with_health(|h| h.connected = false);
+                    shared.mark("disconnected");
+                    let _ = shared.events.send(Event::Disconnected { mono_ns: mono_ns() });
+                }
+                ToDecoder::Notification(mono, characteristic, bytes) => {
+                    let last_start = shared.last_start_ns.load(Ordering::Relaxed);
+                    shared.with_health(|h| decoder.handle(mono, characteristic, &bytes, last_start, h, &mut out));
+                    for event in out.drain(..) {
+                        let _ = shared.events.send(event);
+                    }
+                }
+            }
+        }
+    });
+    (to_decoder, task)
+}
+
+/// Options for [`Band::replay`].
+#[derive(Debug, Clone, Copy)]
+pub struct ReplayOptions {
+    /// Playback speed relative to the recording: 1.0 delivers notifications with their recorded
+    /// spacing, 10.0 ten times faster. Zero, negative or non-finite values deliver them as fast as
+    /// possible.
+    pub speed: f64,
+}
+
+impl Default for ReplayOptions {
+    fn default() -> Self {
+        Self { speed: 1.0 }
+    }
+}
+
+/// What a recording file holds that a replay needs.
+struct Replayable {
+    name: String,
+    firmware: Option<String>,
+    /// `(recorded monotonic time, what happened)` in recorded order.
+    records: Vec<(i64, Recorded)>,
+}
+
+/// One thing a recording holds that a replay reproduces.
+enum Recorded {
+    /// A notification from the band.
+    Notification(Characteristic, Arc<[u8]>),
+    /// A command that was written to the band. Nothing is written during a replay, but the
+    /// decoder needs to know when streams were started, and a recording made of a replay should
+    /// hold the same commands as the original.
+    Write {
+        label: String,
+        bytes: Arc<[u8]>,
+        error: Option<String>,
+    },
+}
+
+fn load_replayable(path: &Path) -> Result<Replayable, Error> {
+    let db = rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let meta = |key: &str| -> Result<Option<String>, Error> {
+        let mut statement = db.prepare("SELECT value FROM meta WHERE key = ?1")?;
+        let mut rows = statement.query([key])?;
+        Ok(match rows.next()? {
+            Some(row) => Some(row.get(0)?),
+            None => None,
+        })
+    };
+    let name = meta("device_name")?.unwrap_or_else(|| "FRENZ-REPLAY".to_owned());
+    let firmware = meta("firmware")?.filter(|f| !f.is_empty());
+    let mut statement = db.prepare("SELECT mono_ns, char, payload FROM notifications ORDER BY id")?;
+    let mut rows = statement.query([])?;
+    let mut records = Vec::new();
+    while let Some(row) = rows.next()? {
+        let (mono, uuid, payload): (i64, String, Vec<u8>) = (row.get(0)?, row.get(1)?, row.get(2)?);
+        // Rows from characteristics this client does not know are skipped, as they are live.
+        if let Some(characteristic) = uuid::Uuid::parse_str(&uuid)
+            .ok()
+            .and_then(|u| Characteristic::from_uuid(u.as_u128()))
+        {
+            records.push((mono, Recorded::Notification(characteristic, payload.into())));
+        }
+    }
+    let mut statement = db.prepare("SELECT mono_ns, label, payload, error FROM writes ORDER BY id")?;
+    let mut rows = statement.query([])?;
+    while let Some(row) = rows.next()? {
+        let (mono, label, payload, error): (i64, String, Vec<u8>, Option<String>) =
+            (row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?);
+        records.push((
+            mono,
+            Recorded::Write {
+                label,
+                bytes: payload.into(),
+                error,
+            },
+        ));
+    }
+    // Recorded order across both tables. The sort is stable, so each table keeps its own order,
+    // and a command comes before a notification with the same timestamp.
+    records.sort_by_key(|(mono, record)| (*mono, matches!(record, Recorded::Notification(..))));
+    Ok(Replayable {
+        name,
+        firmware,
+        records,
+    })
+}
+
+/// True for the bytes of a command that turns streams on.
+fn starts_streams(bytes: &[u8]) -> bool {
+    let start = Command::StreamControl { mask: 0, enable: true }.encode();
+    // Opcode, stream mask, enable flag: any mask counts, as it does for a live write.
+    matches!((bytes, start.as_bytes()), ([opcode, _, enable], [start_opcode, _, start_enable])
+        if opcode == start_opcode && enable == start_enable)
+}
+
+/// Delivers recorded notifications on the path live ones take, then reports a disconnect.
+async fn replay(
+    shared: Arc<Shared>,
+    records: Vec<(i64, Recorded)>,
+    speed: f64,
+    to_decoder: mpsc::UnboundedSender<ToDecoder>,
+) {
+    shared.subscribed.notified().await;
+    let paced = speed.is_finite() && speed > 0.0;
+    let started = tokio::time::Instant::now();
+    let first = records
+        .iter()
+        .find(|(_, record)| matches!(record, Recorded::Notification(..)))
+        .map_or(0, |(mono, _)| *mono);
+    for (recorded, record) in records {
+        if shared.closing.load(Ordering::Relaxed) {
+            return;
+        }
+        if paced {
+            let offset = Duration::from_secs_f64((recorded - first).max(0) as f64 / 1e9 / speed);
+            tokio::time::sleep_until(started + offset).await;
+        } else {
+            tokio::task::yield_now().await;
+        }
+        // Arrival is stamped now, as for a live notification.
+        let (mono, wall) = (mono_ns(), wall_ns());
+        let (characteristic, bytes) = match record {
+            Recorded::Notification(characteristic, bytes) => (characteristic, bytes),
+            Recorded::Write { label, bytes, error } => {
+                // The decoder learns of a stream start in order with the notifications around it.
+                if starts_streams(&bytes) && to_decoder.send(ToDecoder::StreamStart(mono)).is_err() {
+                    return;
+                }
+                let _ = shared.raw.send(RawRecord::Write {
+                    mono_ns: mono,
+                    wall_ns: wall,
+                    label,
+                    bytes,
+                    error,
+                });
+                continue;
+            }
+        };
+        let _ = shared.raw.send(RawRecord::Notification {
+            mono_ns: mono,
+            wall_ns: wall,
+            characteristic,
+            bytes: bytes.clone(),
+        });
+        if to_decoder
+            .send(ToDecoder::Notification(mono, characteristic, bytes))
+            .is_err()
+        {
+            return;
+        }
+    }
+    let _ = to_decoder.send(ToDecoder::ReplayEnded);
+}
+
 /// A connected band.
 ///
 /// If the link drops, the band is reconnected automatically (see [`ConnectOptions::reconnect`]);
@@ -446,45 +662,12 @@ impl Band {
     /// Scans for a band advertising `name`, connects, subscribes to all of its streams and runs the
     /// configured start sequence.
     pub async fn connect(name: &str, options: ConnectOptions) -> Result<Self, Error> {
-        let (events, _) = broadcast::channel(CHANNEL_CAPACITY);
-        let (raw, initial_raw) = broadcast::channel(CHANNEL_CAPACITY);
         let scan_timeout = options.scan_timeout;
-        let shared = Arc::new(Shared {
-            name: name.to_owned(),
-            options,
-            events,
-            raw,
-            health: Mutex::new(Health::default()),
-            last_start_ns: AtomicI64::new(i64::MIN / 2),
-            info: Mutex::new(BandInfo {
-                name: name.to_owned(),
-                ..BandInfo::default()
-            }),
-            link: RwLock::new(None),
-            closing: AtomicBool::new(false),
-            device: Mutex::new(None),
-        });
+        let (shared, initial_raw) = Shared::new(name, options);
         let (notifications, central_events, id) = shared.establish(scan_timeout).await?;
 
-        let (to_decoder, mut decoder_rx) = mpsc::unbounded_channel::<ToDecoder>();
-        let mut tasks = Vec::new();
-        let decoding = shared.clone();
-        tasks.push(tokio::spawn(async move {
-            let mut decoder = Decoder::default();
-            let mut out = Vec::new();
-            while let Some(message) = decoder_rx.recv().await {
-                match message {
-                    ToDecoder::Reset => decoder.reset(),
-                    ToDecoder::Notification(mono, characteristic, bytes) => {
-                        let last_start = decoding.last_start_ns.load(Ordering::Relaxed);
-                        decoding.with_health(|h| decoder.handle(mono, characteristic, &bytes, last_start, h, &mut out));
-                        for event in out.drain(..) {
-                            let _ = decoding.events.send(event);
-                        }
-                    }
-                }
-            }
-        }));
+        let (to_decoder, decoder) = spawn_decoder(shared.clone());
+        let mut tasks = vec![decoder];
         tasks.push(tokio::spawn(supervise(
             shared.clone(),
             notifications,
@@ -501,6 +684,42 @@ impl Band {
         Ok(band)
     }
 
+    /// Plays a recording file back as if a band were sending it: no Bluetooth and no hardware.
+    ///
+    /// The recorded notifications go through the same decoder, events, health counters and raw
+    /// record stream as live ones, stamped with the time they are delivered. When the recording
+    /// ends, [`Event::Disconnected`] is sent. Playback starts at the first call to
+    /// [`Band::subscribe`], [`Band::subscribe_raw`] or [`Band::subscribe_raw_from_start`], so that
+    /// subscriber sees everything from the first notification. There is no device to command, so [`Band::send`] and
+    /// [`Band::request`] fail with [`Error::Disconnected`]. Meant for tests, demos and developing
+    /// against the client without a band.
+    pub async fn replay(recording: impl AsRef<Path>, options: ReplayOptions) -> Result<Self, Error> {
+        let path = recording.as_ref().to_path_buf();
+        let loaded = tokio::task::spawn_blocking(move || load_replayable(&path))
+            .await
+            .map_err(std::io::Error::other)??;
+        let (shared, initial_raw) = Shared::new(
+            &loaded.name,
+            ConnectOptions {
+                reconnect: None,
+                start: StartSequence::None,
+                ..ConnectOptions::default()
+            },
+        );
+        shared.info.lock().unwrap_or_else(PoisonError::into_inner).firmware = loaded.firmware;
+        shared.with_health(|h| h.connected = true);
+        // Treat the start of playback as a stream start, as the recorded session began with one.
+        shared.last_start_ns.store(mono_ns(), Ordering::Relaxed);
+        shared.mark("connected");
+        let (to_decoder, decoder) = spawn_decoder(shared.clone());
+        let player = tokio::spawn(replay(shared.clone(), loaded.records, options.speed, to_decoder));
+        Ok(Self {
+            shared,
+            tasks: vec![decoder, player],
+            initial_raw: Mutex::new(Some(initial_raw)),
+        })
+    }
+
     /// Facts about the band gathered at connect.
     pub fn info(&self) -> BandInfo {
         self.shared.info.lock().unwrap_or_else(PoisonError::into_inner).clone()
@@ -514,23 +733,30 @@ impl Band {
     /// Subscribes to decoded events. A subscriber that falls more than ~16k events behind receives
     /// `RecvError::Lagged` with the number of events it missed.
     pub fn subscribe(&self) -> broadcast::Receiver<Event> {
-        self.shared.events.subscribe()
+        let receiver = self.shared.events.subscribe();
+        self.shared.subscribed.notify_one();
+        receiver
     }
 
     /// Subscribes to raw records (notifications, writes, markers) in arrival order, from now on.
     pub fn subscribe_raw(&self) -> broadcast::Receiver<RawRecord> {
-        self.shared.raw.subscribe()
+        let receiver = self.shared.raw.subscribe();
+        self.shared.subscribed.notify_one();
+        receiver
     }
 
     /// Like [`Band::subscribe_raw`], but the first call receives every record since the connection
     /// was set up (the connect markers, start sequence and first notifications). Later calls
     /// subscribe from now on. Recorders use this so a recording is complete.
     pub fn subscribe_raw_from_start(&self) -> broadcast::Receiver<RawRecord> {
-        self.initial_raw
+        let receiver = self
+            .initial_raw
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .take()
-            .unwrap_or_else(|| self.shared.raw.subscribe())
+            .unwrap_or_else(|| self.shared.raw.subscribe());
+        self.shared.subscribed.notify_one();
+        receiver
     }
 
     /// Adds a marker to the raw record stream.

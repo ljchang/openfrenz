@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/frenz-proto", "crates/frenz", "crates/frenz-export", "crates/frenz-cli"]
+members = ["crates/frenz-proto", "crates/frenz", "crates/frenz-export", "crates/frenz-cli", "crates/frenz-py"]
 
 [workspace.package]
 version = "0.2.1"

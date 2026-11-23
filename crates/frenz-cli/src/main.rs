@@ -5,8 +5,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
-use frenz::proto::{Characteristic, Packet};
-use frenz::{Band, ConnectOptions, Decoder, Event, Health, Recorder, StartSequence};
+use frenz::{Band, ConnectOptions, Event, Health, Recorder, StartSequence};
 
 #[derive(Parser)]
 #[command(name = "frenz", version, about = "Unofficial tool for the FRENZ brainband")]
@@ -212,50 +211,13 @@ async fn record(
     Ok(())
 }
 
-fn summary(file: &PathBuf) -> Result<()> {
-    let db = rusqlite::Connection::open_with_flags(file, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    let starts: Vec<i64> = db
-        .prepare("SELECT mono_ns FROM writes WHERE hex(payload) = '03FF01' ORDER BY id")?
-        .query_map([], |r| r.get(0))?
-        .collect::<Result<_, _>>()?;
-    let mut stmt = db.prepare("SELECT mono_ns, char, payload FROM notifications ORDER BY id")?;
-    let mut rows = stmt.query([])?;
-    let (mut decoder, mut health, mut out) = (Decoder::default(), Health::default(), Vec::new());
-    let (mut first, mut last) = (i64::MAX, i64::MIN);
-    let mut samples = std::collections::BTreeMap::<&str, u64>::new();
-    while let Some(row) = rows.next()? {
-        let t: i64 = row.get(0)?;
-        let uuid: String = row.get(1)?;
-        let payload: Vec<u8> = row.get(2)?;
-        let Some(c) = uuid::Uuid::parse_str(&uuid)
-            .ok()
-            .and_then(|u| Characteristic::from_uuid(u.as_u128()))
-        else {
-            continue;
-        };
-        let last_start = starts.iter().rev().find(|s| **s <= t).copied().unwrap_or(i64::MIN / 2);
-        decoder.handle(t, c, &payload, last_start, &mut health, &mut out);
-        for e in out.drain(..) {
-            if let Event::Packet { packet, .. } = e {
-                let (name, n) = match packet.as_ref() {
-                    Packet::Eeg(_) => ("eeg", 9),
-                    Packet::Accelerometer(_) => ("accelerometer", 25),
-                    Packet::Gyroscope(_) => ("gyroscope", 25),
-                    Packet::Ppg(p) => ("ppg", p.samples().len() as u64),
-                    _ => continue,
-                };
-                *samples.entry(name).or_default() += n;
-            }
-        }
-        first = first.min(t);
-        last = last.max(t);
+fn summary(file: &std::path::Path) -> Result<()> {
+    let summary = frenz_export::recording::summarize(file)?;
+    println!("{}: {:.1} s", file.display(), summary.seconds);
+    for (name, n) in &summary.samples {
+        println!("  {name:>13}: {n:>7} samples, {:.2} Hz", *n as f64 / summary.seconds);
     }
-    let span = (last - first) as f64 / 1e9;
-    println!("{}: {:.1} s", file.display(), span);
-    for (name, n) in &samples {
-        println!("  {name:>13}: {n:>7} samples, {:.2} Hz", *n as f64 / span);
-    }
-    print_health(&health);
+    print_health(&summary.health);
     Ok(())
 }
 

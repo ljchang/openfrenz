@@ -11,3 +11,5 @@ sessions/
 python/.venv/
 *.egg-info/
 .pytest_cache/
+*.so
+*.pyd

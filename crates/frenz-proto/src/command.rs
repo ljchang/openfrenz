@@ -40,6 +40,9 @@ pub enum Command {
     SetPromptVolume(u8),
     /// Request the IMU calibration report.
     GetImuCalibration,
+    /// Session-running notice (`0e 02`), part of the standard start sequence. Without it the band
+    /// powers itself off 10 minutes after streaming starts.
+    StartSession,
     /// Session-end notice (`0e 03`), part of the standard stop sequence; effect not characterized.
     EndSession,
 }
@@ -79,7 +82,7 @@ impl Command {
             Self::GetDeviceName => 0x09,
             Self::GetDeviceTime => 0x0b,
             Self::GetDeviceId => 0x0c,
-            Self::OnConnected | Self::EndSession => 0x0e,
+            Self::OnConnected | Self::StartSession | Self::EndSession => 0x0e,
             Self::HeartRatePeriodic(_) => 0x10,
             Self::SetPromptVolume(_) => 0x36,
             Self::GetImuCalibration => 0xf8,
@@ -96,6 +99,7 @@ impl Command {
             }
             Self::HeartRatePeriodic(on) => Encoded::new(&[op, u8::from(on)]),
             Self::OnConnected => Encoded::new(&[op, 0x00]),
+            Self::StartSession => Encoded::new(&[op, 0x02]),
             Self::EndSession => Encoded::new(&[op, 0x03]),
             Self::StreamControl { mask, enable } => Encoded::new(&[op, mask, u8::from(enable)]),
             Self::SetPromptVolume(v) => Encoded::new(&[op, v]),
@@ -231,7 +235,7 @@ mod tests {
 
     #[test]
     fn encodings_match_observed_wire_bytes() {
-        let cases: [(Command, &[u8]); 9] = [
+        let cases: [(Command, &[u8]); 10] = [
             (Command::GetFirmwareVersion, &[0x01]),
             (Command::TimeSync(0x6b00_92f6), &[0x07, 0x6b, 0x00, 0x92, 0xf6]),
             (Command::SetPromptVolume(0), &[0x36, 0x00]),
@@ -252,6 +256,7 @@ mod tests {
                 &[0x03, 0xff, 0x00],
             ),
             (Command::GetImuCalibration, &[0xf8]),
+            (Command::StartSession, &[0x0e, 0x02]),
             (Command::EndSession, &[0x0e, 0x03]),
         ];
         for (cmd, bytes) in cases {
