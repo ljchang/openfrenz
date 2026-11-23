@@ -203,7 +203,7 @@ and live models. The live fit's rate and jitter are reported per stream in `heal
   and export from a terminal.
 - Releases are built and uploaded by GitHub Actions with PyPI trusted publishing. Rust crates and
   the Python package share one version number.
-- To verify: bundling the D-Bus library in Linux wheels.
+- Linux wheels build the D-Bus client library in, so no system package is needed.
 
 ## Testing
 
@@ -213,7 +213,8 @@ and live models. The live fit's rate and jitter are reported per stream in `heal
   missed is reported and counted, and the recording is still complete), `latest`, timeouts, the
   end of a stream, the live clock, table output, a counter restart after a recorded start
   command, gap and lag events, command argument checking, `summary`, and `export()` agreeing with
-  what was streamed. Not covered: reconnect events and command responses, which need a link.
+  what was streamed. Not covered: reconnect events, which need a link. Command responses, all
+  eight streams and Ctrl-C were checked by hand on a band.
 - The live Bluetooth path is tested by hand on each operating system before a release.
 
 ## Steps
@@ -225,8 +226,9 @@ and live models. The live fit's rate and jitter are reported per stream in `heal
    output, lag reporting, live timing. Segment rules shared with the exporter.
 3. **Done.** Events, `send` / `request`, `export`, `summary` (the summary logic moved from the
    command-line tool into the export library so both use it).
-4. Wheels in CI for all platforms; release to PyPI.
-5. Documentation: a Python guide next to the CLI guide.
+4. **Done.** Wheels built and tested in CI for all platforms; release to PyPI by trusted
+   publishing. The `frenz` command is a library function shared by the Rust binary and the wheel.
+5. **Done.** [Python guide](PYTHON.md) next to the CLI guide.
 
 ## Later
 

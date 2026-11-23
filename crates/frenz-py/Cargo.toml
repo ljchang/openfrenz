@@ -15,8 +15,13 @@ crate-type = ["cdylib"]
 [dependencies]
 frenz = { workspace = true }
 frenz-export = { workspace = true }
+frenz-cli = { workspace = true }
 pyo3 = { version = "0.30", features = ["abi3-py310"] }
 tokio = { version = "1.54", features = ["rt-multi-thread", "sync", "time"] }
+
+# Build the D-Bus client library into Linux wheels, so they need no system package.
+[target.'cfg(target_os = "linux")'.dependencies]
+dbus = { version = "0.9", features = ["vendored"] }
 
 [lints]
 workspace = true

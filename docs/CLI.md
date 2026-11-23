@@ -1,7 +1,7 @@
 # `frenz` command-line guide
 
-Install with `cargo install frenz-cli` (or `cargo build --release -p frenz-cli` in a checkout; the
-binary is `target/release/frenz`). Run `frenz --help` or `frenz <command> --help` for the options.
+Install with `pip install openfrenz` (no Rust needed) or `cargo install frenz-cli` (or
+`cargo build --release -p frenz-cli` in a checkout; the binary is `target/release/frenz`). Run `frenz --help` or `frenz <command> --help` for the options.
 
 On macOS the terminal application needs Bluetooth permission (System Settings → Privacy & Security →
 Bluetooth). On Linux, BlueZ must be running.
@@ -118,9 +118,7 @@ Use it to try `summary`, `export` and the Python package without a band.
 
 ## Loading exports in Python
 
-```sh
-pip install openfrenz
-```
+See the [Python guide](PYTHON.md), which also covers connecting and streaming from Python.
 
 ```python
 from openfrenz import load_session, find_sessions, WindowDataset

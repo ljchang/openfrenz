@@ -1,15 +1,31 @@
-# openfrenz (Python)
+# openfrenz
 
-Load session folders written by `frenz export` and build aligned, fixed-length multimodal windows.
+Unofficial Python package for the FRENZ brainband: connect over Bluetooth LE, read every stream
+live, record losslessly, export time-aligned data, and load it for analysis. It is the
+[openfrenz](https://github.com/ljchang/openfrenz) Rust client compiled into a Python module; no
+Rust and no other software is needed.
 
-```python
-from openfrenz import load_session, WindowDataset, find_sessions
-
-s = load_session("sessions/FRENZA12-1800000000")
-t, eeg, segment = s.signal("eeg")          # eeg: (4, n) raw counts
-ds = WindowDataset(find_sessions("sessions"), window_s=10, hop_s=5,
-                   streams=("eeg", "accel", "gyro", "ppg"), require=("eeg",), min_contact=3)
-item = ds[0]   # {"eeg": (4, 1250), "accel": (3, 500), "gyro": (3, 500), "ppg": (2, 250), "mask": {...}}
+```sh
+pip install openfrenz
 ```
 
-See the [CLI guide](https://github.com/ljchang/openfrenz/blob/main/docs/CLI.md) for the session format.
+```python
+import openfrenz
+
+with openfrenz.connect("FRENZA12") as band:       # records to recordings/ by default
+    for chunk in band.stream("eeg"):
+        chunk.data                                # (4, n) raw counts, NumPy
+        chunk.to_pandas()                         # or chunk.to_polars()
+        break
+
+session = openfrenz.export(band.recording)        # one Parquet file per stream
+t, eeg, segment = session.signal("eeg")
+```
+
+The `frenz` command (`scan`, `record`, `summary`, `export`, `synth`) is installed with it.
+
+- [Python guide](https://github.com/ljchang/openfrenz/blob/main/docs/PYTHON.md)
+- [Command-line guide](https://github.com/ljchang/openfrenz/blob/main/docs/CLI.md)
+- [Hardware notes](https://github.com/ljchang/openfrenz/blob/main/docs/HARDWARE.md)
+
+Not affiliated with or endorsed by Earable. "FRENZ" is used only to describe compatibility.

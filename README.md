@@ -3,8 +3,8 @@
 [![CI](https://github.com/ljchang/openfrenz/actions/workflows/ci.yml/badge.svg)](https://github.com/ljchang/openfrenz/actions/workflows/ci.yml)
 
 Open-source tools for the FRENZ brainband: connect over Bluetooth LE, stream every sensor, record
-sessions losslessly, and export time-aligned data for analysis. Written in Rust, with a small Python
-package for loading the exported data.
+sessions losslessly, and export time-aligned data for analysis. Written in Rust, with a Python
+package that does all of it too.
 
 > **Unofficial.** This project is not affiliated with or endorsed by Earable. "FRENZ" is used only
 > to describe compatibility.
@@ -17,7 +17,7 @@ package for loading the exported data.
 | [`frenz`](crates/frenz) (Rust library) | async client: connect, typed events for every stream, commands, crash-safe recording |
 | [`frenz-proto`](crates/frenz-proto) | packet decoders and command encoders; `no_std`, no dependencies, never panics on any input |
 | [`frenz-export`](crates/frenz-export) | recordings → one Parquet file per stream with an estimated acquisition time for every sample |
-| [`openfrenz`](python) (Python) | load exported sessions into pandas; build aligned fixed-length windows |
+| [`openfrenz`](python) (Python) | the same client from Python: live streams as NumPy / pandas / polars, recording, export, loading sessions and building aligned fixed-length windows. See the [Python guide](docs/PYTHON.md) |
 
 Streams: EEG (4 channels, 125 Hz), accelerometer and gyroscope (50 Hz), PPG (25 Hz), heart rate,
 SpO2, battery and electrode-contact quality. What is known about the hardware and its Bluetooth
@@ -36,7 +36,7 @@ cargo install frenz-cli          # installs the `frenz` command
 - Linux: install the build packages first (`sudo apt-get install libdbus-1-dev pkg-config` on
   Debian/Ubuntu), and BlueZ must be running.
 
-**Python package.** Needs Python 3.10 or newer.
+**Python package.** Needs Python 3.10 or newer; no Rust needed. It also installs the `frenz` command.
 
 ```sh
 pip install openfrenz            # or: uv add openfrenz
@@ -54,11 +54,19 @@ frenz export  recordings/FRENZA12-1800000000.sqlite -o sessions/
 No band at hand? `frenz synth demo.sqlite` writes a synthetic recording you can summarize and
 export the same way.
 
-```python
-from openfrenz import load_session
+From Python (see the [Python guide](docs/PYTHON.md)):
 
-s = load_session("sessions/FRENZA12-1800000000")
-t, eeg, segment = s.signal("eeg")      # eeg: (4, n) raw counts; t: Unix seconds
+```python
+import openfrenz
+
+with openfrenz.connect("FRENZA12") as band:       # records to recordings/ by default
+    for chunk in band.stream("eeg"):
+        chunk.data                                # (4, n) raw counts
+        chunk.t                                   # (n,) estimated Unix seconds
+        break
+
+session = openfrenz.export(band.recording)        # same files as `frenz export`
+t, eeg, segment = session.signal("eeg")
 ```
 
 From Rust:
@@ -100,7 +108,7 @@ is not yet known). Recordings contain physiological data: keep them out of versi
 ```sh
 cargo test --workspace           # includes an end-to-end test on a synthetic recording
 cargo clippy --workspace --all-targets -- -D warnings
-cd python && uv venv && uv pip install -e '.[test]' && pytest
+cd python && uv venv && uv pip install -e '.[test]' && .venv/bin/python -m pytest   # builds the Rust extension
 ```
 
 ## License
