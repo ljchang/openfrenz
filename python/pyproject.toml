@@ -9,7 +9,7 @@ dependencies = ["numpy>=1.26", "pandas>=2.0", "pyarrow>=15"]
 
 [project.urls]
 Repository = "https://github.com/ljchang/openfrenz"
-Documentation = "https://github.com/ljchang/openfrenz/blob/main/docs/PYTHON.md"
+Documentation = "https://ljchang.github.io/openfrenz/"
 
 [project.scripts]
 frenz = "openfrenz._cli:main"

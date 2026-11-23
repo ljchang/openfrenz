@@ -5,6 +5,8 @@
 [![crates.io](https://img.shields.io/crates/v/frenz)](https://crates.io/crates/frenz)
 [![docs.rs](https://img.shields.io/docsrs/frenz)](https://docs.rs/frenz)
 
+**Documentation: <https://ljchang.github.io/openfrenz/>**
+
 Open-source tools for the FRENZ brainband: connect over Bluetooth LE, stream every sensor, record
 sessions losslessly, and export time-aligned data for analysis. One Rust client, usable from a
 terminal, from Python and from Rust.
@@ -158,6 +160,7 @@ cargo test --workspace           # includes an end-to-end test on a synthetic re
 cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p frenz --example replay                # no band needed
 cd python && uv venv && uv pip install -e '.[test]' && .venv/bin/python -m pytest   # builds the Rust extension
+uvx zensical serve                                 # preview the documentation site (built from docs/)
 ```
 
 Changes are listed in the [changelog](CHANGELOG.md).

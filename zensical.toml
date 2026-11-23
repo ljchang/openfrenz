@@ -1,0 +1,57 @@
+# Documentation site (https://ljchang.github.io/openfrenz/), built from docs/ by Zensical.
+# Preview locally with: uvx zensical serve
+
+[project]
+site_name = "openfrenz"
+site_description = "Unofficial open-source tools for the FRENZ brainband: connect, stream, record and export from a terminal, Python or Rust"
+site_url = "https://ljchang.github.io/openfrenz/"
+repo_url = "https://github.com/ljchang/openfrenz"
+repo_name = "ljchang/openfrenz"
+edit_uri = "edit/main/docs/"
+nav = [
+  { "Home" = "index.md" },
+  { "Guides" = [
+    { "Command line" = "CLI.md" },
+    { "Python" = "PYTHON.md" },
+    { "Rust" = "RUST.md" },
+  ] },
+  { "Reference" = [
+    { "Python API" = "PYTHON_API.md" },
+    { "Hardware notes" = "HARDWARE.md" },
+  ] },
+]
+
+[project.theme]
+language = "en"
+features = [
+  "content.action.edit",
+  "content.code.copy",
+  "navigation.footer",
+  "navigation.instant",
+  "navigation.sections",
+  "navigation.top",
+  "navigation.tracking",
+  "search.highlight",
+]
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: light)"
+scheme = "default"
+toggle.icon = "lucide/sun"
+toggle.name = "Switch to dark mode"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: dark)"
+scheme = "slate"
+toggle.icon = "lucide/moon"
+toggle.name = "Switch to light mode"
+
+[project.markdown_extensions]
+admonition = {}
+attr_list = {}
+tables = {}
+toc.permalink = true
+pymdownx.highlight.anchor_linenums = true
+pymdownx.highlight.pygments_lang_class = true
+pymdownx.inlinehilite = {}
+pymdownx.superfences = {}

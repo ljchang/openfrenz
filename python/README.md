@@ -24,8 +24,9 @@ t, eeg, segment = session.signal("eeg")
 
 The `frenz` command (`scan`, `record`, `summary`, `export`, `synth`) is installed with it.
 
-- [Python guide](https://github.com/ljchang/openfrenz/blob/main/docs/PYTHON.md)
-- [Command-line guide](https://github.com/ljchang/openfrenz/blob/main/docs/CLI.md)
-- [Hardware notes](https://github.com/ljchang/openfrenz/blob/main/docs/HARDWARE.md)
+- [Documentation](https://ljchang.github.io/openfrenz/)
+- [Python guide](https://ljchang.github.io/openfrenz/PYTHON/)
+- [Command-line guide](https://ljchang.github.io/openfrenz/CLI/)
+- [Hardware notes](https://ljchang.github.io/openfrenz/HARDWARE/)
 
 Not affiliated with or endorsed by Earable. "FRENZ" is used only to describe compatibility.

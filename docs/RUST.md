@@ -11,8 +11,8 @@ packets, send commands, record losslessly, and export. The [`frenz` command](CLI
 | [`frenz-export`](https://docs.rs/frenz-export) | Recordings → Parquet session folders with a time for every sample |
 
 The API reference for each is on docs.rs. Complete programs for everything below are in
-[`crates/frenz/examples`](../crates/frenz/examples) and
-[`crates/frenz-export/examples`](../crates/frenz-export/examples).
+[`crates/frenz/examples`](https://github.com/ljchang/openfrenz/tree/main/crates/frenz/examples) and
+[`crates/frenz-export/examples`](https://github.com/ljchang/openfrenz/tree/main/crates/frenz-export/examples).
 
 ## Set up
 
@@ -99,7 +99,7 @@ Nothing is fixed up silently. Besides packets, a subscriber receives:
 `subscribe()` returns a Tokio broadcast receiver, so several tasks can each have their own. A
 receiver that falls more than about 16,000 events behind gets `RecvError::Lagged(n)` and carries
 on from the oldest event still held; handle that case if your processing can be slow. See
-[`examples/stream.rs`](../crates/frenz/examples/stream.rs).
+[`examples/stream.rs`](https://github.com/ljchang/openfrenz/blob/main/crates/frenz/examples/stream.rs).
 
 ## Reconnection
 
@@ -154,7 +154,7 @@ received, with arrival times, plus your markers. It is written by its own thread
 disk about ten times a second, so a crash loses at most the last moments and never corrupts the
 file. `Recorder::create` refuses to overwrite an existing file. Create the recorder right after
 connecting so the file starts at the connection. See
-[`examples/record.rs`](../crates/frenz/examples/record.rs).
+[`examples/record.rs`](https://github.com/ljchang/openfrenz/blob/main/crates/frenz/examples/record.rs).
 
 Recordings contain physiological data: keep them out of version control.
 
@@ -187,7 +187,7 @@ the columns, and any Parquet reader (pandas, polars, Arrow, DuckDB) opens the fi
 `frenz::synth::write_recording(path, seconds)` writes a synthetic recording in the real format,
 and `Band::replay(path, ReplayOptions::default())` plays any recording back through the same
 decoder and event path a live band uses. A replay has no device to command, so `send` and
-`request` return an error. See [`examples/replay.rs`](../crates/frenz/examples/replay.rs):
+`request` return an error. See [`examples/replay.rs`](https://github.com/ljchang/openfrenz/blob/main/crates/frenz/examples/replay.rs):
 
 ```sh
 cargo run -p frenz --example replay

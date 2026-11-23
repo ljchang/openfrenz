@@ -1,54 +1,18 @@
-# Python live API: design (draft)
+# Python API reference
 
-Status: in progress. Steps 1 to 3 of [Steps](#steps) are implemented: everything in the API below.
-Wheels for all platforms, the release and the user guide remain. Nothing here has been run
-against a real band from Python yet; all tests use replayed recordings. This document describes adding live access to the band from
-Python: scan, connect, stream, send commands and record, with the Rust client doing the work
-underneath.
-
-## Goals
-
-- `pip install openfrenz` (or `uv add openfrenz`) is the whole installation. No Rust toolchain.
-- A few lines in a script or notebook get live data as NumPy arrays.
-- Everything the Rust client can do is reachable: commands, events, health counters, recording.
-- The project's rules still hold: nothing is silently dropped, filled in or smoothed, and timing
-  is reported honestly.
-
-## Not in scope
-
-- Lab Streaming Layer output. A user who wants it can publish chunks with `pylsl` in a few lines.
-- A background service that keeps the connection alive across Python restarts (see
-  [Later](#later)).
-- Audio and stimulation commands (not implemented in the Rust client either).
-
-## Sketch
+Everything in the `openfrenz` Python package. For a walk-through, start with the
+[Python guide](PYTHON.md).
 
 ```python
 import openfrenz
 
-for found in openfrenz.scan(timeout=8):
-    print(found.name, found.rssi)
-
-with openfrenz.connect("FRENZA12") as band:   # records to recordings/ by default
-    print(band.info.firmware, band.battery())
-
-    band.mark("task_start")
-    for chunk in band.stream("eeg"):          # blocks until new samples arrive
-        chunk.data                            # (4, n) int32, raw counts
-        chunk.t                               # (n,) estimated Unix seconds
-        chunk.to_pandas()                     # or chunk.to_polars()
-        if done:
-            break
-
-    window = band.latest("eeg", seconds=8)    # most recent 8 s, for live models and plots
-    print(band.health())
-
-session = openfrenz.export(band.recording, "sessions/")   # same result as `frenz export`
+with openfrenz.connect("FRENZA12") as band:
+    chunk = band.read("eeg", timeout=5)
 ```
 
-## API
+All calls block; a call that waits releases the interpreter lock and returns promptly on Ctrl-C.
 
-### Module functions
+## Module functions
 
 | Function | Returns | Notes |
 |---|---|---|
@@ -61,7 +25,7 @@ session = openfrenz.export(band.recording, "sessions/")   # same result as `fren
 | `COMMANDS` | `dict` | Command name → argument names |
 | `load_session`, `find_sessions`, `WindowDataset` | unchanged | |
 
-### `Band`
+## `Band`
 
 Use it as a context manager; leaving the block stops the streams, closes the recording and
 disconnects, also after an exception or Ctrl-C.
@@ -86,7 +50,7 @@ have the same names and channels as `openfrenz.SIGNALS` and the exported tables 
 `spo2` are exported together as `vitals`). Each stream has one read position, so read a given
 stream from one place.
 
-### `Chunk`
+## `Chunk`
 
 | Field | Shape and type | Meaning |
 |---|---|---|
@@ -114,7 +78,7 @@ The PPG channels are `tag2` and `tag3`, and EEG has its four active channels. Th
 are zero on the hardware tested; `health()` counts any sample where one is not
 (`inactive_nonzero`), and the recording holds them regardless.
 
-### `Event`
+## `Event`
 
 `kind`, `t` (Unix seconds) and `detail` (a dict, empty for most kinds).
 
@@ -132,7 +96,7 @@ are zero on the hardware tested; `health()` counts any sample where one is not
 Up to 4096 unread events are kept; older ones are dropped and counted in `health()`
 (`events_dropped`).
 
-### Commands
+## Commands
 
 `get_firmware_version`, `get_battery`, `get_serial_number`, `get_device_name`, `get_device_time`,
 `get_device_id`, `get_imu_calibration`, `time_sync([unix_seconds])` (the computer's time if
@@ -141,7 +105,7 @@ omitted), `heart_rate_periodic(enable)`, `stream_control(mask, enable)`,
 client exposes; an unknown name or wrong arguments raise `ValueError` / `TypeError` without
 sending anything.
 
-### Errors
+## Errors
 
 All derive from `openfrenz.FrenzError`: `BandNotFound`, `BluetoothError` and its subclass
 `BluetoothUnavailable` (no adapter, or the operating system refused access; the message says how
@@ -191,54 +155,19 @@ reconnect), because the first packets on a new connection arrive late and nothin
 Analyses that need the best timing should use the exported session; `Chunk.t` is for live display
 and live models. The live fit's rate and jitter are reported per stream in `health()`.
 
-## Packaging
+## Not included
 
-- One repository. A new crate `crates/frenz-py` (not published to crates.io) holds the bindings
-  and is built with maturin into the `openfrenz` wheel as `openfrenz._native`; the existing Python
-  modules stay as they are.
-- Wheels for macOS (Apple silicon, Intel), Linux (x86-64, ARM64) and Windows (x86-64), built
-  against Python's stable ABI so one wheel per platform serves Python 3.10 and later.
-- A source distribution is published as well; installing from it needs Rust.
-- The wheel also carries the `frenz` command, so `pip install openfrenz` is enough to scan, record
-  and export from a terminal.
-- Releases are built and uploaded by GitHub Actions with PyPI trusted publishing. Rust crates and
-  the Python package share one version number.
-- Linux wheels build the D-Bus client library in, so no system package is needed.
+- `async` versions of the blocking calls, for use inside asyncio programs.
+- A helper process that owns the connection so it survives a Python restart, or lets several
+  programs read one band.
+- Lab Streaming Layer output. Chunks can be published with `pylsl` in a few lines.
+- Audio and stimulation commands (not implemented in the Rust client either).
 
-## Testing
+## How it is tested
 
-- Tests run against a replayed synthetic recording, which goes through the same decoder and event
-  path a real band uses, so CI needs no hardware and no Bluetooth.
-- Covered so far: chunk shapes and types, every sample delivered, the slow-reader path (what was
-  missed is reported and counted, and the recording is still complete), `latest`, timeouts, the
-  end of a stream, the live clock, table output, a counter restart after a recorded start
-  command, gap and lag events, command argument checking, `summary`, and `export()` agreeing with
-  what was streamed. Not covered: reconnect events, which need a link. Command responses, all
-  eight streams and Ctrl-C were checked by hand on a band.
-- The live Bluetooth path is tested by hand on each operating system before a release.
-
-## Steps
-
-1. **Done.** A replay source in the Rust client (recorded packets and commands through the real
-   decoder and event path). `frenz-py` crate with `scan`, `connect`, `info`, `health`, `battery`,
-   `mark`, recording, `close`; maturin build.
-2. **Done.** Streams: ring buffers, `read`, `stream`, `latest`, `Chunk` with pandas and polars
-   output, lag reporting, live timing. Segment rules shared with the exporter.
-3. **Done.** Events, `send` / `request`, `export`, `summary` (the summary logic moved from the
-   command-line tool into the export library so both use it).
-4. **Done.** Wheels built and tested in CI for all platforms; release to PyPI by trusted
-   publishing. The `frenz` command is a library function shared by the Rust binary and the wheel.
-5. **Done.** [Python guide](PYTHON.md) next to the CLI guide.
-
-## Later
-
-- `async` versions of the blocking calls for use inside asyncio programs.
-- An optional helper process that owns the connection, so that it survives a Python restart and
-  several programs can read one band.
-
-## Decisions
-
-- Recording is on by default. `connect()` prints the recording path once so the file is not a
-  surprise, and `record=False` turns it off.
-- Chunks are NumPy, with `to_pandas()` and `to_polars()`.
-- Blocking calls come first; `async` versions are listed under [Later](#later).
+Tests run against a replayed synthetic recording, which goes through the same decoder and event
+path a real band uses, so they need no hardware. They cover chunk shapes and types, every sample
+being delivered, the slow-reader path, `latest`, timeouts, the end of a stream, live timing, table
+output, counter restarts, gap and lag events, command argument checking, `summary`, and `export()`
+agreeing with what was streamed. Scanning, connecting, commands, all eight streams and Ctrl-C were
+checked by hand on a band on macOS. Reconnect events have only been exercised from Rust.
