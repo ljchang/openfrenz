@@ -227,6 +227,7 @@ fn chunk_object(py: Python<'_>, chunk: &streams::Chunk) -> PyResult<Py<PyAny>> {
             column(py, rows.iter().map(|r| r.arrival.to_ne_bytes())),
             column(py, rows.iter().map(|r| r.device_time.to_ne_bytes())),
             column(py, rows.iter().map(|r| r.segment.to_ne_bytes())),
+            column(py, rows.iter().map(|r| r.index.to_ne_bytes())),
             column(py, rows.iter().map(|r| [u8::from(r.duplicate)])),
             column(py, rows.iter().map(|r| [u8::from(r.held)])),
             chunk.dropped,

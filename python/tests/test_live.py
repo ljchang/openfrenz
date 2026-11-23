@@ -107,6 +107,7 @@ def test_stream_delivers_every_sample(recording):
     assert all(c.dropped == 0 for c in chunks)
     assert np.all(np.diff(t) > 0), "time must increase within a segment"
     assert set(np.concatenate([c.segment for c in chunks])) == {0}
+    assert np.array_equal(np.concatenate([c.index for c in chunks]), np.arange(sum(len(c) for c in chunks)))
     assert data.any()
 
 
@@ -223,8 +224,12 @@ def test_events_report_a_gap_and_the_end(recording):
     with openfrenz.replay(recording, speed=0) as band:
         events = list(band.events())
         health = band.health()
+        index = np.concatenate([c.index for c in read_all(band, "eeg")])
         with pytest.raises(openfrenz.Disconnected):
             band.read_event(timeout=0)
+    # The index counts the lost frame: one step of 10 samples, every other step is 1.
+    steps = np.diff(index)
+    assert sorted(set(steps)) == [1, 10] and (steps == 10).sum() == 1
     kinds = [e.kind for e in events]
     assert kinds.count("sequence_gap") == 1 and kinds[-1] == "disconnected"
     gap = events[kinds.index("sequence_gap")]
