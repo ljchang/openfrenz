@@ -21,5 +21,8 @@ tokio = { version = "1.54", features = ["rt-multi-thread", "macros", "sync", "ti
 tracing = "0.1"
 uuid = "1"
 
+[dev-dependencies]
+tokio = { version = "1.54", features = ["signal"] }
+
 [lints]
 workspace = true

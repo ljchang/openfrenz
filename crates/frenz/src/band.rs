@@ -38,7 +38,8 @@ pub struct Discovered {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum StartSequence {
     /// The standard start sequence (verified on hardware): firmware query, time sync,
-    /// prompt volume 0, periodic heart rate, on-connected, stream start, IMU calibration query.
+    /// prompt volume 0, periodic heart rate, on-connected, stream start, IMU calibration query,
+    /// session-running notice (without which the band powers itself off after 10 minutes).
     #[default]
     Standard,
     /// Send nothing.
