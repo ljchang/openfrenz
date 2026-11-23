@@ -29,6 +29,9 @@ class Chunk:
     device_time: np.ndarray
     #: Uninterrupted stretch each sample belongs to, numbered as in exports.
     segment: np.ndarray
+    #: Position of each sample within its segment. It counts samples that were lost, so a step
+    #: larger than 1 between neighbours means data is missing there.
+    index: np.ndarray
     #: True where the packet repeated the previous packet's samples.
     duplicate: np.ndarray
     #: True where every sample of the packet was identical (frozen sensor output).
@@ -37,12 +40,12 @@ class Chunk:
     #: They are still in the recording.
     dropped: int = 0
     #: False for heart rate, SpO2, battery and contact, which have no steady rate: their ``t``
-    #: is the arrival time, and ``segment``, ``duplicate`` and ``held`` carry no information.
+    #: is the arrival time, and ``segment``, ``index``, ``duplicate`` and ``held`` carry no information.
     sampled: bool = True
 
     @classmethod
     def _from_buffers(
-        cls, stream, channels, sampled, data, t, arrival, device_time, segment, duplicate, held, dropped
+        cls, stream, channels, sampled, data, t, arrival, device_time, segment, index, duplicate, held, dropped
     ) -> Chunk:
         n = len(t) // 8
         return cls(
@@ -53,6 +56,7 @@ class Chunk:
             arrival=np.frombuffer(arrival, dtype=np.float64),
             device_time=np.frombuffer(device_time, dtype=np.int64),
             segment=np.frombuffer(segment, dtype=np.int64),
+            index=np.frombuffer(index, dtype=np.int64),
             duplicate=np.frombuffer(duplicate, dtype=np.bool_),
             held=np.frombuffer(held, dtype=np.bool_),
             dropped=dropped,

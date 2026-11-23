@@ -35,6 +35,8 @@ pub(crate) struct Row {
     pub(crate) device_time: i64,
     /// Uninterrupted stretch the sample belongs to.
     pub(crate) segment: i64,
+    /// Position of the sample within its segment, counting samples that were lost.
+    pub(crate) index: i64,
     /// The packet repeated the previous packet's samples.
     pub(crate) duplicate: bool,
     /// Every sample in the packet was identical (frozen sensor output).
@@ -241,6 +243,7 @@ impl Stream {
                     arrival,
                     device_time,
                     segment: 0,
+                    index: 0,
                     duplicate: false,
                     held: false,
                     values,
@@ -294,6 +297,7 @@ impl Stream {
                 arrival,
                 device_time,
                 segment: placed.segment,
+                index: placed.first_sample + k as i64,
                 duplicate,
                 held,
                 values,

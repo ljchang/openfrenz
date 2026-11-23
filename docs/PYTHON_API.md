@@ -59,12 +59,13 @@ stream from one place.
 | `arrival` | `(n,)` float64 | When the packet carrying each sample reached the computer |
 | `device_time` | `(n,)` int64 | The band's own clock for the packet (whole seconds) |
 | `segment` | `(n,)` int64 | Uninterrupted stretch the sample belongs to, decided by the same code as in exports |
+| `index` | `(n,)` int64 | Position within the segment, counting lost samples: a step larger than 1 between neighbours means data is missing there |
 | `duplicate` | `(n,)` bool | The packet repeated the previous packet's samples |
 | `held` | `(n,)` bool | Every sample in the packet was identical (frozen sensor output) |
 | `channels` | tuple of str | Channel names |
 | `stream` | str | Stream name |
 | `dropped` | int | Samples that left the buffer unread before this chunk (see below) |
-| `sampled` | bool | False for `heart_rate`, `spo2`, `battery` and `contact`, which have no steady rate: their `t` is the arrival time and `segment`, `duplicate`, `held` carry no information |
+| `sampled` | bool | False for `heart_rate`, `spo2`, `battery` and `contact`, which have no steady rate: their `t` is the arrival time and `segment`, `index`, `duplicate`, `held` carry no information |
 
 The arrays are NumPy. Repeated and frozen packets are delivered and flagged, not removed.
 `chunk.to_pandas()` and `chunk.to_polars()` return a table with one row per sample, using the
