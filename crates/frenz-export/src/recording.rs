@@ -8,7 +8,7 @@ use rusqlite::{Connection, OpenFlags};
 use serde_json::{Map, Value, json};
 
 use crate::table::{Column, Table};
-use crate::timing::{ClockFit, fit_lower_envelope};
+use crate::timing::{ClockFit, Segmenter, fit_lower_envelope};
 use crate::{Error, Session, eeg_channel_json, motion_json};
 
 /// The EEG sequence counter restarts at 0 within this time of a stream-start command (observed).
@@ -46,58 +46,23 @@ fn index_and_time<T: PartialEq>(
     // Per-packet: segment and index of its first sample within the segment.
     let mut seg_of = Vec::with_capacity(packets.len());
     let mut first_sample = Vec::with_capacity(packets.len());
-    let (mut seg, mut n) = (0i64, 0i64);
-    let packet_period = packets.first().map_or(0.0, |p| p.samples.len() as f64 / rate_hz);
-    // Sequence-less streams send a fixed number of packets per device second (2 observed); more
-    // means a burst (seen during PPG freezes), after which the sample count no longer tracks time.
-    let per_second = (1.0 / packet_period.max(1e-9)).round() as usize;
-    let mut same_second = 0usize;
+    let mut segmenter = Segmenter::new(rate_hz);
     for (i, p) in packets.iter().enumerate() {
-        if let Some(prev) = i.checked_sub(1).and_then(|j| packets.get(j)) {
-            let forced = break_before.get(i).copied().unwrap_or(false);
-            let step = match (prev.sequence, p.sequence) {
-                (Some(a), Some(b)) => {
-                    let d = i64::from(b.wrapping_sub(a));
-                    let after_start = starts.iter().any(|s| (0..RESTART_WINDOW_NS).contains(&(p.mono - s)));
-                    if d == 1 {
-                        Some(1)
-                    } else if b == 0 && after_start {
-                        // Continuous only if data kept flowing; after a pause it is a new segment.
-                        *restarts += 1;
-                        (p.arrival - prev.arrival < 4.0 * packet_period + 0.5).then_some(1)
-                    } else if d > 1 && p.arrival - prev.arrival < (d as f64 + 4.0) * packet_period + 1.0 {
-                        *lost_frames += (d - 1) as u64;
-                        Some(d)
-                    } else {
-                        None
-                    }
-                }
-                // Streams without a sequence counter: a long silence or a device clock jump starts
-                // a new segment, because lost packets cannot be counted.
-                _ => {
-                    let gap = p.arrival - prev.arrival;
-                    let clock_step = i64::from(p.device_time) - i64::from(prev.device_time);
-                    same_second = if clock_step == 0 { same_second + 1 } else { 1 };
-                    let burst = same_second > per_second;
-                    (gap < 2.0 * packet_period.max(0.5) && (0..=1).contains(&clock_step) && !burst).then_some(1)
-                }
-            };
-            // Any silence of more than a second starts a new segment, whatever the counters say.
-            let paused = p.arrival - prev.arrival > 1.0 + 2.0 * packet_period;
-            match step {
-                Some(d) if !forced && !paused => n += d * prev.samples.len() as i64,
-                _ => {
-                    seg += 1;
-                    n = 0;
-                    same_second = 1;
-                }
-            }
-        } else {
-            same_second = 1;
-        }
-        seg_of.push(seg);
-        first_sample.push(n);
+        let forced = break_before.get(i).copied().unwrap_or(false);
+        let after_start = starts.iter().any(|s| (0..RESTART_WINDOW_NS).contains(&(p.mono - s)));
+        let placed = segmenter.push(
+            p.arrival,
+            p.device_time,
+            p.sequence,
+            p.samples.len(),
+            forced,
+            after_start,
+        );
+        seg_of.push(placed.segment);
+        first_sample.push(placed.first_sample);
     }
+    *lost_frames += segmenter.lost_frames;
+    *restarts += segmenter.restarts;
     // Fit each segment on non-duplicate packets.
     let segments = seg_of.last().map_or(0, |s| s + 1);
     let mut fits = Vec::new();
@@ -553,4 +518,61 @@ pub fn from_recording(path: &Path) -> Result<Session, Error> {
     }
     session.meta.insert("streams".into(), Value::Object(streams));
     Ok(session)
+}
+
+/// What a recording holds, without exporting it.
+#[derive(Debug, Clone)]
+pub struct Summary {
+    /// Time from the first to the last notification (s).
+    pub seconds: f64,
+    /// Samples per stream (`eeg`, `accelerometer`, `gyroscope`, `ppg`).
+    pub samples: std::collections::BTreeMap<&'static str, u64>,
+    /// The counters a live connection would have ended with.
+    pub health: Health,
+}
+
+/// Reads a recording and counts what is in it.
+pub fn summarize(path: &Path) -> Result<Summary, Error> {
+    let db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let starts: Vec<i64> = db
+        .prepare("SELECT mono_ns FROM writes WHERE hex(payload) = '03FF01' ORDER BY id")?
+        .query_map([], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
+    let mut statement = db.prepare("SELECT mono_ns, char, payload FROM notifications ORDER BY id")?;
+    let mut rows = statement.query([])?;
+    let (mut decoder, mut health, mut out) = (Decoder::default(), Health::default(), Vec::new());
+    let (mut first, mut last) = (i64::MAX, i64::MIN);
+    let mut samples = std::collections::BTreeMap::<&'static str, u64>::new();
+    while let Some(row) = rows.next()? {
+        let t: i64 = row.get(0)?;
+        let uuid: String = row.get(1)?;
+        let payload: Vec<u8> = row.get(2)?;
+        let Some(c) = uuid::Uuid::parse_str(&uuid)
+            .ok()
+            .and_then(|u| Characteristic::from_uuid(u.as_u128()))
+        else {
+            continue;
+        };
+        let last_start = starts.iter().rev().find(|s| **s <= t).copied().unwrap_or(i64::MIN / 2);
+        decoder.handle(t, c, &payload, last_start, &mut health, &mut out);
+        for event in out.drain(..) {
+            if let frenz::Event::Packet { packet, .. } = event {
+                let (name, n) = match packet.as_ref() {
+                    Packet::Eeg(_) => ("eeg", 9),
+                    Packet::Accelerometer(_) => ("accelerometer", 25),
+                    Packet::Gyroscope(_) => ("gyroscope", 25),
+                    Packet::Ppg(p) => ("ppg", p.samples().len() as u64),
+                    _ => continue,
+                };
+                *samples.entry(name).or_default() += n;
+            }
+        }
+        first = first.min(t);
+        last = last.max(t);
+    }
+    Ok(Summary {
+        seconds: (last - first) as f64 / 1e9,
+        samples,
+        health,
+    })
 }

@@ -87,3 +87,14 @@ def load_session(path: str | Path) -> Session:
 def find_sessions(root: str | Path) -> list[Path]:
     """All session folders (containing ``session.json``) under ``root``."""
     return sorted(p.parent for p in Path(root).rglob("session.json"))
+
+
+def export(recording: str | Path, out_dir: str | Path = "sessions") -> Session:
+    """Export a recording (``.sqlite``) to ``out_dir/<recording name>/`` and load the result.
+
+    The same exporter as ``frenz export``: one Parquet file per stream plus ``session.json``.
+    Files already in that folder with the same names are replaced.
+    """
+    from ._native import export_recording
+
+    return load_session(export_recording(Path(recording), Path(out_dir)))

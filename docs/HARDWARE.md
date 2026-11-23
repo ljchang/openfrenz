@@ -84,13 +84,14 @@ A response is `[opcode, status, payload…]` with status `00` for success [V].
 | Device name | `09` | ASCII |
 | Read device time | `0b` | u32 seconds |
 | Device ID | `0c` | ASCII (the Bluetooth address) |
-| Session notice | `0e 00` at start, `0e 03` at end | ack; effect not characterized |
+| Session notice | `0e 00` on connecting, `0e 02` after the stream start, `0e 03` at end | ack. Without `0e 02` the band powers itself off 10 minutes after the stream start [V]; other effects not characterized |
 | Periodic heart rate | `10 01` | ack; HR/SpO2 change from every 5 s to every 1 s |
 | Prompt volume | `36` + u8 | ack |
 | IMU calibration report | `f8` | 3 × u8 `std`, 3 × u16 `diff`; exact meaning [I] |
 
 Start sequence used by this project [V]: firmware version, time sync, prompt volume 0, periodic heart
-rate, session notice, stream start, IMU calibration report. Stop: stream stop, session-end notice.
+rate, session notice, stream start, IMU calibration report, session-running notice (`0e 02`). Stop:
+stream stop, session-end notice.
 
 The device has further opcodes (audio, alarms, stimulation, file transfer, firmware update, test
 modes, reset, rename). They are intentionally not implemented here until characterized on a bench.
@@ -104,7 +105,7 @@ Timestamps are whole seconds: seconds since power-on until a time sync, Unix sec
 | EEG | 178 bytes: sequence u8, type u8 (= 6), seconds u32, then 9 samples × (6 × i24 + flag u8), trailer u8. 13.9 packets/s (125.0 samples/s measured). Flag is 1 on ~4 % of samples and the trailer varies 0–16; meanings unknown. |
 | Accelerometer, gyroscope | 158 bytes: seconds u32, 25 × (x, y, z as i16), 4 trailing bytes (mostly zero; meaning unknown). 2 packets/s. |
 | PPG | seconds u32, then 12 or 13 samples × three 24-bit words, then 2 zero bytes (114 or 123 bytes). Each word: tag in bits 23–19 (1, 2, 3), unsigned 19-bit value in bits 18–0. 2 packets/s. |
-| Heart rate, SpO2 | 6 bytes: seconds u32, one byte of unknown meaning, value u8. |
+| Heart rate, SpO2 | 6 bytes: seconds u32, value u8 (beats per minute or percent), then a byte that is 1 when the band has no reading (value is then 0) and 0 otherwise [V]. |
 | Battery | 5 bytes: seconds u32, percent u8. Every 5 s. |
 | Contact | 5 bytes: seconds u32, state u8 (0–3). Every 2 s. |
 | Status | variable. `0e 00 00 00 00` about once a second. Every 60 s a block: `07 12 ff ee` + u16 that tracks battery voltage in mV (4039 → 4010 as charge fell 90 → 87 %) [I], `07 12 aa aa` + u16 (constant 37), `07 12 ff ff` + u16 (44–62, unknown), `07 11`. `07 db`, `07 d0` are sent when the band is about to power off, whether by timeout or by its power button [V]. |
@@ -129,6 +130,10 @@ Timestamps are whole seconds: seconds since power-on until a time sync, Unix sec
 - **Automatic power-off** [V, one observation each]: while streaming, the band powered off ~33 s after
   being taken off (putting it back on within ~26 s kept it on); while not streaming it powered off
   ~11 minutes after the last disconnect.
+- **Ten-minute power-off without the session-running notice** [V]: when `0e 02` was not sent, the band
+  sent the power-off warning 600.3 s after the stream start and dropped the link at 605 s, with good
+  contact throughout (4 of 4 sessions). With `0e 02` sent it streamed for 13 minutes and stayed on (2 of
+  2 sessions). Longer sessions have not been tried.
 - **Delivery jitter** [V]: Bluetooth delivery delay beyond the minimum had a 95th percentile of
   80–100 ms for EEG and motion and ~250–300 ms for PPG on macOS. Estimate sample times from sample
   counts, not arrival times (see `frenz-export`).

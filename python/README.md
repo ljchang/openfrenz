@@ -12,4 +12,4 @@ ds = WindowDataset(find_sessions("sessions"), window_s=10, hop_s=5,
 item = ds[0]   # {"eeg": (4, 1250), "accel": (3, 500), "gyro": (3, 500), "ppg": (2, 250), "mask": {...}}
 ```
 
-See the [CLI guide](../docs/CLI.md) for the session format.
+See the [CLI guide](https://github.com/ljchang/openfrenz/blob/main/docs/CLI.md) for the session format.

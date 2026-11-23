@@ -157,9 +157,9 @@ pub fn write_recording_with_pause(path: &Path, seconds: u32, pause: Option<(f64,
             rows.push((
                 t,
                 Characteristic::HeartRate,
-                [&secs[..], &[1, 64 + (s % 5) as u8]].concat(),
+                [&secs[..], &[64 + (s % 5) as u8, 0]].concat(),
             ));
-            rows.push((t, Characteristic::Spo2, [&secs[..], &[1, 97]].concat()));
+            rows.push((t, Characteristic::Spo2, [&secs[..], &[97, 0]].concat()));
             rows.push((t + 0.05, Characteristic::Status, vec![0x0e, 0, 0, 0, 0]));
             if s % 5 == 0 {
                 rows.push((t, Characteristic::Battery, [&secs[..], &[90]].concat()));

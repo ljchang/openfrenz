@@ -29,7 +29,7 @@ pub mod event;
 pub mod record;
 pub mod synth;
 
-pub use band::{Band, BandInfo, ConnectOptions, Discovered, StartSequence, scan};
+pub use band::{Band, BandInfo, ConnectOptions, Discovered, ReplayOptions, StartSequence, scan};
 pub use error::Error;
 pub use event::{Decoder, Event, Health, RawRecord};
 pub use frenz_proto as proto;

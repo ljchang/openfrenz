@@ -41,6 +41,142 @@ impl ClockFit {
     }
 }
 
+/// Where a packet's samples sit within a stream: which uninterrupted segment, and the index of
+/// its first sample in that segment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Placed {
+    /// Segment number, from 0.
+    pub segment: i64,
+    /// Index within the segment of the packet's first sample.
+    pub first_sample: i64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Previous {
+    arrival: f64,
+    device_time: u32,
+    sequence: Option<u8>,
+    samples: usize,
+}
+
+/// Assigns packets of one stream to segments and sample indices, one packet at a time.
+///
+/// The rules use only the packets seen so far, so the exporter and live readers place packets
+/// identically. A new segment starts after a silence of more than a second, after a jump in the
+/// sequence counter that the elapsed time does not explain, and, for streams without a counter,
+/// after a step in the band's clock or a burst of packets.
+#[derive(Debug, Clone)]
+pub struct Segmenter {
+    rate_hz: f64,
+    packet_period: f64,
+    per_second: usize,
+    previous: Option<Previous>,
+    segment: i64,
+    next: i64,
+    same_second: usize,
+    /// Frames missing inside segments (counted from sequence numbers).
+    pub lost_frames: u64,
+    /// Sequence counter restarts that followed a stream-start command.
+    pub restarts: u64,
+}
+
+impl Segmenter {
+    /// A segmenter for a stream sampled at `rate_hz`.
+    pub fn new(rate_hz: f64) -> Self {
+        Self {
+            rate_hz,
+            packet_period: 0.0,
+            per_second: 0,
+            previous: None,
+            segment: 0,
+            next: 0,
+            same_second: 0,
+            lost_frames: 0,
+            restarts: 0,
+        }
+    }
+
+    /// Places the next packet. `arrival` is in seconds, `sequence` is the frame counter if the
+    /// stream has one, `samples` the number of samples in the packet. `forced` starts a new
+    /// segment regardless (an undecodable frame came before this one). `after_start` says a
+    /// stream-start command was written within the last second, which explains a counter restart.
+    pub fn push(
+        &mut self,
+        arrival: f64,
+        device_time: u32,
+        sequence: Option<u8>,
+        samples: usize,
+        forced: bool,
+        after_start: bool,
+    ) -> Placed {
+        let Some(prev) = self.previous else {
+            self.packet_period = samples as f64 / self.rate_hz;
+            // Sequence-less streams send a fixed number of packets per device second (2 observed);
+            // more means a burst (seen during PPG freezes), after which the sample count no longer
+            // tracks time.
+            self.per_second = (1.0 / self.packet_period.max(1e-9)).round() as usize;
+            self.same_second = 1;
+            self.previous = Some(Previous {
+                arrival,
+                device_time,
+                sequence,
+                samples,
+            });
+            return Placed {
+                segment: self.segment,
+                first_sample: self.next,
+            };
+        };
+        let packet_period = self.packet_period;
+        let step = match (prev.sequence, sequence) {
+            (Some(a), Some(b)) => {
+                let d = i64::from(b.wrapping_sub(a));
+                if d == 1 {
+                    Some(1)
+                } else if b == 0 && after_start {
+                    // Continuous only if data kept flowing; after a pause it is a new segment.
+                    self.restarts += 1;
+                    (arrival - prev.arrival < 4.0 * packet_period + 0.5).then_some(1)
+                } else if d > 1 && arrival - prev.arrival < (d as f64 + 4.0) * packet_period + 1.0 {
+                    self.lost_frames += (d - 1) as u64;
+                    Some(d)
+                } else {
+                    None
+                }
+            }
+            // Streams without a sequence counter: a long silence or a device clock jump starts a
+            // new segment, because lost packets cannot be counted.
+            _ => {
+                let gap = arrival - prev.arrival;
+                let clock_step = i64::from(device_time) - i64::from(prev.device_time);
+                self.same_second = if clock_step == 0 { self.same_second + 1 } else { 1 };
+                let burst = self.same_second > self.per_second;
+                (gap < 2.0 * packet_period.max(0.5) && (0..=1).contains(&clock_step) && !burst).then_some(1)
+            }
+        };
+        // Any silence of more than a second starts a new segment, whatever the counters say.
+        let paused = arrival - prev.arrival > 1.0 + 2.0 * packet_period;
+        match step {
+            Some(d) if !forced && !paused => self.next += d * prev.samples as i64,
+            _ => {
+                self.segment += 1;
+                self.next = 0;
+                self.same_second = 1;
+            }
+        }
+        self.previous = Some(Previous {
+            arrival,
+            device_time,
+            sequence,
+            samples,
+        });
+        Placed {
+            segment: self.segment,
+            first_sample: self.next,
+        }
+    }
+}
+
 fn least_squares(points: &[(f64, f64)]) -> Option<(f64, f64)> {
     let n = points.len() as f64;
     if points.len() < 2 {
@@ -70,7 +206,7 @@ fn percentile(sorted: &[f64], q: f64) -> f64 {
 /// packets, the nominal period is used and only the offset is fitted.
 pub fn fit_lower_envelope(points: &[(f64, f64)], nominal_rate_hz: f64) -> ClockFit {
     let nominal_period = 1.0 / nominal_rate_hz;
-    let (mut offset, mut period, nominal) = if points.len() >= 20 {
+    let (offset, period, nominal) = if points.len() >= 20 {
         let mut fit = least_squares(points).unwrap_or((0.0, nominal_period));
         for _ in 0..4 {
             let mut residuals: Vec<f64> = points.iter().map(|(x, y)| y - (fit.0 + fit.1 * x)).collect();
@@ -91,6 +227,23 @@ pub fn fit_lower_envelope(points: &[(f64, f64)], nominal_rate_hz: f64) -> ClockF
     } else {
         (0.0, nominal_period, true)
     };
+    place_on_envelope(points, offset, period, nominal_period, nominal)
+}
+
+/// Fits only the offset, taking the sample rate as `nominal_rate_hz`. For when there is too
+/// little data to trust a fitted rate.
+pub fn fit_nominal(points: &[(f64, f64)], nominal_rate_hz: f64) -> ClockFit {
+    let nominal_period = 1.0 / nominal_rate_hz;
+    place_on_envelope(points, 0.0, nominal_period, nominal_period, true)
+}
+
+fn place_on_envelope(
+    points: &[(f64, f64)],
+    mut offset: f64,
+    mut period: f64,
+    nominal_period: f64,
+    nominal: bool,
+) -> ClockFit {
     // Shift the line down so no packet arrives before its last sample was acquired.
     let min_residual = points
         .iter()

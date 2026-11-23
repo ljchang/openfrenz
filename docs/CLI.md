@@ -119,7 +119,7 @@ Use it to try `summary`, `export` and the Python package without a band.
 ## Loading exports in Python
 
 ```sh
-pip install "openfrenz @ git+https://github.com/ljchang/openfrenz#subdirectory=python"
+pip install openfrenz
 ```
 
 ```python

@@ -270,10 +270,10 @@ impl PpgPacket {
 pub struct VitalPacket {
     /// Device time (whole seconds).
     pub device_time: u32,
-    /// Byte 4 (meaning unknown).
-    pub check: u8,
-    /// Reading (beats per minute or percent saturation).
+    /// Reading (beats per minute or percent saturation); 0 when the band has no reading.
     pub value: u8,
+    /// 1 when the band has no reading, otherwise 0.
+    pub check: u8,
 }
 
 impl VitalPacket {
@@ -291,8 +291,8 @@ impl VitalPacket {
         }
         Ok(Self {
             device_time: be_u32(p, 0).ok_or(bad)?,
-            check: *p.get(4).ok_or(bad)?,
-            value: *p.get(5).ok_or(bad)?,
+            value: *p.get(4).ok_or(bad)?,
+            check: *p.get(5).ok_or(bad)?,
         })
     }
 }
@@ -512,8 +512,8 @@ mod tests {
 
     #[test]
     fn small_packets() {
-        let v = VitalPacket::decode(Characteristic::HeartRate, &[0x6b, 0, 0x92, 0xf6, 1, 72]).unwrap();
-        assert_eq!((v.device_time, v.check, v.value), (1_795_199_734, 1, 72));
+        let v = VitalPacket::decode(Characteristic::HeartRate, &[0x6b, 0, 0x92, 0xf6, 72, 0]).unwrap();
+        assert_eq!((v.device_time, v.value, v.check), (1_795_199_734, 72, 0));
         assert_eq!(BatteryPacket::decode(&[0, 0, 1, 0x81, 0x5a]).unwrap().percent, 90);
         assert!(ContactPacket::decode(&[0, 0, 1, 0x80, 0]).unwrap().off_head());
         assert_eq!(
