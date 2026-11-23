@@ -10,6 +10,9 @@ readme = "../../README.md"
 keywords = ["frenz","eeg","bluetooth","cli","wearable"]
 categories = ["science","command-line-utilities"]
 
+[lib]
+doc = false
+
 [[bin]]
 name = "frenz"
 path = "src/main.rs"

@@ -974,6 +974,12 @@ fn synth(path: PathBuf, seconds: u32) -> PyResult<()> {
     frenz::synth::write_recording(&path, seconds).map_err(to_py)
 }
 
+/// Runs the `frenz` command with these arguments (the first is the program name); returns the exit code.
+#[pyfunction]
+fn cli(py: Python<'_>, args: Vec<String>) -> u8 {
+    py.detach(|| frenz_cli::run(args))
+}
+
 #[pymodule]
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     let py = module.py();
@@ -985,6 +991,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<Response>()?;
     module.add_function(wrap_pyfunction!(export_recording, module)?)?;
     module.add_function(wrap_pyfunction!(summary, module)?)?;
+    module.add_function(wrap_pyfunction!(cli, module)?)?;
     let commands = PyDict::new(py);
     for (name, parameters) in COMMANDS {
         commands.set_item(name, PyTuple::new(py, parameters)?)?;
