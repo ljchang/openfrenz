@@ -46,9 +46,8 @@ jobs:
       - if: matrix.test
         shell: bash
         run: |
-          python -m pip install --find-links python/dist --no-index --only-binary openfrenz openfrenz || \
-            python -m pip install --find-links python/dist openfrenz
-          python -m pip install pytest polars
+          # Install the wheel file itself: by name, pip could pick the same version from PyPI.
+          python -m pip install python/dist/*.whl pytest polars
           frenz --version
           mkdir wheel-test && cd wheel-test
           frenz synth demo.sqlite --seconds 60
