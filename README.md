@@ -150,6 +150,7 @@ commands. Recordings contain physiological data: keep them out of version contro
 | [`crates/frenz`](crates/frenz) | the client library: connect, typed events for every stream, commands, crash-safe recording, replay |
 | [`crates/frenz-proto`](crates/frenz-proto) | packet decoders and command encoders; `no_std`, no dependencies, never panics on any input |
 | [`crates/frenz-export`](crates/frenz-export) | recordings → Parquet sessions with an estimated time for every sample |
+| [`crates/frenz-model`](crates/frenz-model) | run step-based models on recordings and live bands; load model files from a folder or the Hugging Face Hub |
 | [`crates/frenz-cli`](crates/frenz-cli) | the `frenz` command |
 | [`crates/frenz-py`](crates/frenz-py), [`python`](python) | the Python package |
 

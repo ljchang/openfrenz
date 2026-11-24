@@ -1,0 +1,30 @@
+[package]
+name = "frenz-model"
+description = "Run step-based models on FRENZ brainband data, from recordings or live"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords = ["frenz","eeg","model","wearable"]
+categories = ["science"]
+
+[features]
+# Fetch model files from the Hugging Face Hub.
+hub = ["dep:ureq"]
+
+[dependencies]
+frenz = { workspace = true }
+frenz-export = { workspace = true }
+ureq = { version = "3", optional = true }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1.54", features = ["rt-multi-thread", "sync", "time"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1.54", features = ["macros"] }
+
+[lints]
+workspace = true

@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **`frenz-model`: run models on recordings and live bands.** A `Model` names the streams it
+  reads (any the band sends; required, preferred, or taken as they arrive) and is run one step at
+  a time by `run_recording` or `Live`, with a reset wherever data is missing. `Registry` loads
+  model files (`config.json`, `model.safetensors`) from a folder or, with the `hub` feature, from
+  the Hugging Face Hub. See the [Rust guide](docs/RUST.md#run-a-model).
+- The live sample buffers moved from the Python bindings into `frenz_model::streams`, so Rust
+  programs get the same timed, segmented samples Python does.
+
 ## 0.3.0
 
 - **Python bindings.** `pip install openfrenz` now gives the whole client, not only the loader:
