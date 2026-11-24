@@ -1,0 +1,170 @@
+{
+ "openfrenz_model": "pipeline",
+ "name": "fixture",
+ "version": "1",
+ "step": {
+  "stream": "eeg",
+  "samples": 250
+ },
+ "inputs": {
+  "accel": {
+   "samples": 100
+  }
+ },
+ "nodes": [
+  {
+   "name": "clean",
+   "op": "filter",
+   "in": "eeg",
+   "start": "settled",
+   "steps": [
+    {
+     "type": "dc_block",
+     "pole": 0.99
+    },
+    {
+     "type": "notch",
+     "hz": 60,
+     "q": 12
+    },
+    {
+     "type": "bandpass",
+     "low": 0.5,
+     "high": 45,
+     "order": 2
+    }
+   ]
+  },
+  {
+   "name": "power",
+   "op": "band_power",
+   "in": "clean",
+   "bands": [
+    [
+     4,
+     8
+    ],
+    [
+     8,
+     12
+    ],
+    [
+     12,
+     30
+    ]
+   ],
+   "relative_to": [
+    1,
+    45
+   ]
+  },
+  {
+   "name": "beta",
+   "op": "envelope",
+   "in": "clean",
+   "band": [
+    20,
+    30
+   ]
+  },
+  {
+   "name": "coh",
+   "op": "coherence",
+   "in": "clean",
+   "pairs": [
+    [
+     "forehead_left",
+     "forehead_right"
+    ]
+   ],
+   "bands": [
+    [
+     8,
+     12
+    ]
+   ],
+   "segment": 125,
+   "average_steps": 3
+  },
+  {
+   "name": "pac",
+   "op": "coupling",
+   "in": "clean",
+   "phase_band": [
+    4,
+    8
+   ],
+   "amplitude_band": [
+    30,
+    45
+   ],
+   "trim_s": 0.2,
+   "average_steps": 3
+  },
+  {
+   "name": "move",
+   "op": "summary",
+   "in": "accel",
+   "stats": [
+    "sd",
+    "mean"
+   ]
+  },
+  {
+   "name": "x",
+   "op": "concat",
+   "in": [
+    "power",
+    "beta",
+    "coh",
+    "pac",
+    "move"
+   ]
+  },
+  {
+   "name": "z",
+   "op": "normalize",
+   "in": "x",
+   "weights": "norm"
+  },
+  {
+   "name": "recent",
+   "op": "history",
+   "in": "z",
+   "steps": 3
+  },
+  {
+   "name": "net",
+   "op": "network",
+   "in": "recent",
+   "names": [
+    "a",
+    "b"
+   ],
+   "layers": [
+    {
+     "type": "lstm",
+     "weights": "rnn"
+    },
+    {
+     "type": "last"
+    },
+    {
+     "type": "dense",
+     "weights": "head.0",
+     "activation": "elu"
+    },
+    {
+     "type": "dense",
+     "weights": "head.2"
+    },
+    {
+     "type": "sigmoid"
+    }
+   ]
+  }
+ ],
+ "outputs": [
+  "net"
+ ]
+}

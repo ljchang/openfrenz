@@ -1,5 +1,7 @@
 //! Cutting streams into steps.
 
+use std::collections::BTreeMap;
+
 use crate::Error;
 use crate::model::{Block, Input, Model, Output, Step, Take};
 
@@ -69,6 +71,8 @@ pub struct Stepper<M: Model> {
     /// End of the previous step when the next one follows it directly.
     previous_end: Option<f64>,
     skipped: u64,
+    /// Steps skipped, by the stream that was missing from them.
+    missed: BTreeMap<String, u64>,
 }
 
 impl<M: Model> Stepper<M> {
@@ -110,6 +114,7 @@ impl<M: Model> Stepper<M> {
             breaks: Vec::new(),
             previous_end: None,
             skipped: 0,
+            missed: BTreeMap::new(),
         })
     }
 
@@ -121,6 +126,12 @@ impl<M: Model> Stepper<M> {
     /// Steps skipped so far because data was missing.
     pub fn skipped(&self) -> u64 {
         self.skipped
+    }
+
+    /// The skipped steps, counted by the stream that was missing from each: the first stream
+    /// when it had a hole itself, otherwise the required stream that was not there.
+    pub fn missed(&self) -> &BTreeMap<String, u64> {
+        &self.missed
     }
 
     /// Adds samples of `stream`, oldest first: their times, `values[channel][sample]`, and for
@@ -192,7 +203,8 @@ impl<M: Model> Stepper<M> {
                 break;
             };
             if last - start > self.max_step_seconds {
-                self.skip(n, last);
+                let clock = self.input_name(0);
+                self.skip(n, last, clock);
                 continue;
             }
             let mut step = Step {
@@ -203,19 +215,23 @@ impl<M: Model> Stepper<M> {
             // How much longer than this step the spec lets a step be: another stream may start
             // that much after it and still belong to the step.
             let slack = self.max_step_seconds - (last - start);
-            let (mut waiting, mut lacking) = (false, false);
+            let (mut waiting, mut lacking) = (false, None);
             for (input, buffer) in self.inputs.iter().zip(&self.buffers).skip(1) {
                 match input.take {
                     Take::Samples(k) => {
                         let from = buffer.t.partition_point(|t| *t < start);
                         if buffer.t.len() < from + k {
                             waiting = true;
-                            lacking |= input.required;
+                            if input.required {
+                                lacking.get_or_insert_with(|| input.stream.clone());
+                            }
                         } else if buffer.span(from, from + k) > self.max_step_seconds
                             || buffer.t.get(from).is_some_and(|first| first - start > slack)
                         {
                             // A hole in the stream, or its samples only begin after the step did.
-                            lacking |= input.required;
+                            if input.required {
+                                lacking.get_or_insert_with(|| input.stream.clone());
+                            }
                         } else {
                             step.blocks.insert(input.stream.clone(), buffer.block(from, from + k));
                         }
@@ -235,8 +251,8 @@ impl<M: Model> Stepper<M> {
             if waiting && !end && held < 2 * n {
                 break; // the other stream may simply not have arrived yet
             }
-            if lacking {
-                self.skip(n, last);
+            if let Some(stream) = lacking {
+                self.skip(n, last, stream);
                 continue;
             }
             if let Some(values) = self.model.step(&step).map_err(Error::Model)? {
@@ -260,10 +276,11 @@ impl<M: Model> Stepper<M> {
         self.inputs.get(index).map(|i| i.stream.clone()).unwrap_or_default()
     }
 
-    fn skip(&mut self, n: usize, last: f64) {
+    fn skip(&mut self, n: usize, last: f64, missing: String) {
         self.drop_clock(n);
         self.restart();
         self.skipped += 1;
+        *self.missed.entry(missing).or_insert(0) += 1;
         self.trim(last - self.max_step_seconds);
     }
 }

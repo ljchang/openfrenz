@@ -101,6 +101,11 @@ fn a_new_segment_and_a_hole_restart_the_model() {
     // Two steps, restart at the segment, two steps, one skipped for the hole, one after it.
     assert_eq!(steps, vec![0.0, 1.0, 0.0, 1.0, 0.0]);
     assert_eq!(stepper.skipped(), 1);
+    assert_eq!(
+        stepper.missed().get("eeg"),
+        Some(&1),
+        "the hole was in the first stream"
+    );
     assert_eq!(resets.load(Ordering::Relaxed), 3);
     assert_eq!(out[2].t, 10.0 + 124.0 / 125.0);
 }
@@ -127,6 +132,12 @@ fn a_required_stream_is_needed_and_a_preferred_one_is_not() {
             .map(|o| (o.values[0], o.values[2]))
             .collect();
         assert_eq!(got, expected);
+        // Only a required stream that is missing costs steps, and it is named.
+        let missed = stepper.missed().get("accel").copied().unwrap_or(0);
+        assert_eq!(
+            (stepper.skipped(), missed),
+            if expected.len() == 1 { (2, 2) } else { (0, 0) }
+        );
     }
 }
 
@@ -185,7 +196,7 @@ async fn a_recording_gives_the_same_steps_offline_and_replayed() {
             Input::arrived("battery"),
         ]
     };
-    let offline = run_recording(Probe::new(inputs()), &file).unwrap();
+    let offline = run_recording(Probe::new(inputs()), &file).unwrap().outputs;
     assert!(offline.len() >= 24, "{} steps", offline.len());
     assert!(offline.iter().all(|o| o.values[2] == 50.0));
     assert!(
@@ -198,7 +209,9 @@ async fn a_recording_gives_the_same_steps_offline_and_replayed() {
     let short = dir.path().join("short.sqlite");
     frenz::synth::write_recording_with_pause(&short, 12, Some((4.0, 3.0))).unwrap();
     let eeg_only = || Probe::new(vec![Input::samples("eeg", 125)]);
-    let expected = run_recording(eeg_only(), &short).unwrap();
+    let whole = run_recording(eeg_only(), &short).unwrap();
+    assert_eq!((whole.skipped, whole.missed.len()), (0, 0));
+    let expected = whole.outputs;
     assert!(expected.iter().filter(|o| o.values[0] == 0.0).count() == 2);
     let band = Band::replay(&short, ReplayOptions { speed: 2.0 }).await.unwrap();
     let mut live = Live::new(eeg_only(), &band, false).unwrap();
