@@ -65,7 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     frenz::synth::write_recording(&file, 5)?;
 
     println!("from the recording:");
-    for output in run_recording(Rms::new(), &file)? {
+    for output in run_recording(Rms::new(), &file)?.outputs {
         println!("  {:.2}  {:.1?}", output.t, output.values);
     }
 

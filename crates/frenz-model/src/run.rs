@@ -1,6 +1,6 @@
 //! Running a model on a recording and on a band.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -93,9 +93,19 @@ fn signal(session: &Session, stream: &str) -> Result<Option<Signal>, Error> {
     }))
 }
 
-/// Runs `model` over a session read with [`frenz_export::read`]: one output per step that
-/// produced one, in time order.
-pub fn run_session<M: Model>(model: M, session: &Session) -> Result<Vec<Output>, Error> {
+/// What a model gave over a whole recording.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Run {
+    /// One output per step that produced one, in time order.
+    pub outputs: Vec<Output>,
+    /// Steps skipped because data was missing.
+    pub skipped: u64,
+    /// The skipped steps, counted by the stream that was missing from each.
+    pub missed: BTreeMap<String, u64>,
+}
+
+/// Runs `model` over a session read with [`frenz_export::read`].
+pub fn run_session<M: Model>(model: M, session: &Session) -> Result<Run, Error> {
     let inputs = model.spec().inputs.clone();
     let mut stepper = Stepper::new(model)?;
     // The first stream last, so its steps find the others complete.
@@ -108,11 +118,16 @@ pub fn run_session<M: Model>(model: M, session: &Session) -> Result<Vec<Output>,
             None => {}
         }
     }
-    stepper.pop(true)
+    let outputs = stepper.pop(true)?;
+    Ok(Run {
+        outputs,
+        skipped: stepper.skipped(),
+        missed: stepper.missed().clone(),
+    })
 }
 
 /// Runs `model` over a `.sqlite` recording.
-pub fn run_recording<M: Model>(model: M, recording: &Path) -> Result<Vec<Output>, Error> {
+pub fn run_recording<M: Model>(model: M, recording: &Path) -> Result<Run, Error> {
     run_session(model, &frenz_export::read(recording)?)
 }
 
@@ -169,9 +184,15 @@ impl<M: Model> Live<M> {
         self.stepper.model()
     }
 
-    /// Steps skipped so far because data was missing.
+    /// Steps skipped so far because data was missing. A model that gives no output while this
+    /// number grows is waiting for a stream it requires: [`Live::missed`] says which.
     pub fn skipped(&self) -> u64 {
         self.stepper.skipped()
+    }
+
+    /// The skipped steps, counted by the stream that was missing from each.
+    pub fn missed(&self) -> &BTreeMap<String, u64> {
+        self.stepper.missed()
     }
 
     fn push(&mut self, stream: &str, chunk: &Chunk) {

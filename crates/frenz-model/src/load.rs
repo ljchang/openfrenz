@@ -50,6 +50,14 @@ impl Registry {
         self
     }
 
+    /// Adds [`crate::Pipeline`]: models described entirely by their files.
+    #[must_use]
+    pub fn with_pipelines(self) -> Self {
+        self.with(crate::Pipeline::KIND, |dir| {
+            Ok(Box::new(crate::Pipeline::from_dir(dir)?) as Box<dyn Model>)
+        })
+    }
+
     /// The kinds that can be loaded.
     pub fn kinds(&self) -> impl Iterator<Item = &str> {
         self.loaders.keys().map(String::as_str)

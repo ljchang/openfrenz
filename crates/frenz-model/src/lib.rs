@@ -5,6 +5,9 @@
 //! ([`run_recording`]) and on a connected or replayed band ([`Live`]); [`Stepper`] cuts the
 //! streams into steps for both and restarts the model wherever data was lost.
 //!
+//! Models can be written in code against [`Model`], using the blocks in [`dsp`], or entirely as
+//! data: a [`Pipeline`] is a `config.json` that wires standard blocks together.
+//!
 //! Model files are a folder with `config.json` and usually `model.safetensors`. `config.json`
 //! names the kind of model under the key `openfrenz_model`; a [`Registry`] maps each kind to the
 //! code that loads it. With the `hub` feature the folder can be fetched from the Hugging Face Hub
@@ -45,6 +48,7 @@
 pub mod dsp;
 mod load;
 mod model;
+mod pipeline;
 mod run;
 mod stepper;
 pub mod streams;
@@ -53,7 +57,8 @@ pub use load::{CONFIG_KEY, Registry, kind};
 #[cfg(feature = "hub")]
 pub use load::{fetch, resolve};
 pub use model::{Block, Input, Model, ModelError, Output, Spec, Step, Take};
-pub use run::{Live, run_recording, run_session};
+pub use pipeline::Pipeline;
+pub use run::{Live, Run, run_recording, run_session};
 pub use stepper::Stepper;
 
 /// What can go wrong running a model.
