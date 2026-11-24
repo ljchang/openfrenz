@@ -28,11 +28,15 @@ from ._native import (
     summary,
     synth,
 )
+from . import dsp
 from .chunk import Chunk
 from .dataset import WindowDataset
+from .model import Pipeline
 from .session import SIGNALS, Session, export, find_sessions, load_session
 
 __all__ = [
+    "Pipeline",
+    "dsp",
     "Band",
     "BandInfo",
     "BandNotFound",
