@@ -7,6 +7,21 @@
   a time by `run_recording` or `Live`, with a reset wherever data is missing. `Registry` loads
   model files (`config.json`, `model.safetensors`) from a folder or, with the `hub` feature, from
   the Hugging Face Hub. See the [Rust guide](docs/RUST.md#run-a-model).
+- **Signal-processing blocks** (`frenz_model::dsp`): Butterworth, notch and DC-removal filters
+  that carry their state across steps, zero-phase filtering, power spectra and band power,
+  envelope and phase, coherence between channels, phase-amplitude coupling, summaries and
+  quality checks. Tested against SciPy.
+- **Pipelines: models as data.** `Pipeline` runs a model described by `config.json` alone, a list
+  of blocks and how they connect, with stored numbers and small networks (dense, LSTM) read from
+  `model.safetensors`. See the [Rust guide](docs/RUST.md#models-as-data-pipelines).
+- Pipelines can use a stream when it is there (`"required": false`) and take slow streams as
+  they arrive (`"arrived": true`); skipped steps are counted by the stream that was missing.
+- More blocks: Morlet wavelets, heartbeats and heart-rate variability from the pulse sensor, and
+  artifact subspace reconstruction (calibration and cleaning), each also usable in a pipeline.
+- **Python: `openfrenz.dsp` and `openfrenz.Pipeline`.** The same blocks on NumPy arrays, and
+  pipelines loaded from a folder or the Hugging Face Hub that score a recording (`run`) or a band
+  as it streams (`stream`). See [Models and signal processing](docs/MODELS.md).
+- The minimum Rust version is 1.89, which a dependency already required.
 - The live sample buffers moved from the Python bindings into `frenz_model::streams`, so Rust
   programs get the same timed, segmented samples Python does.
 

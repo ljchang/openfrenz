@@ -37,7 +37,7 @@ This installs the Python package and the `frenz` command. It needs Python 3.10 o
 nothing else: wheels are provided for macOS (Apple silicon and Intel), Linux (x86-64 and ARM64) and
 Windows.
 
-If you prefer to install the command with Rust (1.88 or newer): `cargo install frenz-cli`. On
+If you prefer to install the command with Rust (1.89 or newer): `cargo install frenz-cli`. On
 Linux that needs the D-Bus development files first (`sudo apt-get install libdbus-1-dev pkg-config`
 on Debian/Ubuntu).
 
@@ -150,7 +150,7 @@ commands. Recordings contain physiological data: keep them out of version contro
 | [`crates/frenz`](crates/frenz) | the client library: connect, typed events for every stream, commands, crash-safe recording, replay |
 | [`crates/frenz-proto`](crates/frenz-proto) | packet decoders and command encoders; `no_std`, no dependencies, never panics on any input |
 | [`crates/frenz-export`](crates/frenz-export) | recordings → Parquet sessions with an estimated time for every sample |
-| [`crates/frenz-model`](crates/frenz-model) | run step-based models on recordings and live bands; load model files from a folder or the Hugging Face Hub |
+| [`crates/frenz-model`](crates/frenz-model) | signal-processing blocks and step-based models, run on recordings and live bands; models as data (`config.json`) from a folder or the Hugging Face Hub |
 | [`crates/frenz-cli`](crates/frenz-cli) | the `frenz` command |
 | [`crates/frenz-py`](crates/frenz-py), [`python`](python) | the Python package |
 

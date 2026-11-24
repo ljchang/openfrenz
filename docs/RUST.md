@@ -21,7 +21,7 @@ cargo add frenz
 cargo add tokio --features macros,rt-multi-thread,signal
 ```
 
-Needs Rust 1.88 or newer. The client is async and runs on [Tokio](https://tokio.rs).
+Needs Rust 1.89 or newer. The client is async and runs on [Tokio](https://tokio.rs).
 
 - macOS: the application you run from (Terminal, your IDE) needs Bluetooth permission; macOS asks
   the first time.
@@ -230,7 +230,7 @@ and `contact`. Values are raw counts.
 
 ```rust
 // A recording, as fast as the model runs:
-let outputs = frenz_model::run_recording(model, Path::new("session.sqlite"))?;
+let run = frenz_model::run_recording(model, Path::new("session.sqlite"))?;   // run.outputs, run.missed
 
 // A connected or replayed band, one output as each step completes:
 let mut live = frenz_model::Live::new(model, &band, true)?;
@@ -238,7 +238,9 @@ while let Some(output) = live.next().await? { /* output.t, output.values */ }
 ```
 
 The model is reset at the start, at every new segment and after every step that had to be skipped
-because data was missing, so it never carries state across a hole. Repeated and frozen packets
+because data was missing, so it never carries state across a hole. Skipped steps are counted by
+the stream that was missing (`Live::missed`, `Run::missed`), which is how a model that stays silent
+says what it is waiting for. Repeated and frozen packets
 are left out. Live, pauses and lost data are recognised by when packets arrive, so replay a
 recording at its recorded pace to see what a live run would have given, and use `run_recording`
 to score it quickly. See [`examples/rms.rs`](https://github.com/ljchang/openfrenz/blob/main/crates/frenz-model/examples/rms.rs):
@@ -263,6 +265,18 @@ or `owner/name@revision`; files are kept per commit under `~/.cache/openfrenz`. 
 repositories use the token in `HF_TOKEN` or the one saved by the Hugging Face command-line login.
 The files hold numbers and settings only: the code for a kind of model has to be part of the
 program that loads it.
+
+### Blocks and pipelines
+
+`frenz_model::dsp` has the signal-processing blocks a model is usually made of, as plain
+functions and small stateful types: `Design` and `Filter` (Butterworth, notch, DC removal, with
+state carried across steps), `filtfilt`, `periodogram`, `welch`, `morlet`, `analytic`,
+`cross_spectrum` (coherence), `coupling`, `heart`, `asr_calibrate` and `Asr`, `summary` and
+`quality`. Their numbers follow SciPy's and are tested against it.
+
+A model made only of those blocks needs no code at all: `Pipeline::from_dir` reads it from a
+`config.json`, and a registry built with `.with_pipelines()` loads it like any other kind. The
+[Models and signal processing](MODELS.md) guide describes every block and the file format.
 
 ## Only the decoders
 

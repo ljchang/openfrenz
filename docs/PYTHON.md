@@ -113,6 +113,31 @@ windows = WindowDataset(find_sessions("sessions"), window_s=10, hop_s=5,
 windows[0]["eeg"].shape                           # (4, 1250)
 ```
 
+## Process signals and run models
+
+`openfrenz.dsp` has filters, spectra, wavelets, coherence, coupling, heartbeat detection and
+artifact removal, on NumPy arrays:
+
+```python
+from openfrenz import dsp
+
+clean = dsp.Filter([{"type": "notch", "hz": 60}, {"type": "bandpass", "low": 0.5, "high": 45}], 125)
+freqs, density = dsp.welch(clean(eeg), 125, segment=250)
+alpha = dsp.band_power(freqs, density, 8, 12)
+```
+
+`openfrenz.Pipeline` runs a model described by its files, from a folder or a Hugging Face
+repository, on a recording or on a band as it streams:
+
+```python
+model = openfrenz.Pipeline("owner/name")
+scores = model.run(band.recording)                 # a DataFrame, one row per step
+for out in model.stream(band):                     # live, one dict per step
+    print(out)
+```
+
+See [Models and signal processing](MODELS.md) for every block and the pipeline format.
+
 ## From a terminal
 
 `pip install openfrenz` also installs the `frenz` command (`frenz scan`, `frenz record`,
