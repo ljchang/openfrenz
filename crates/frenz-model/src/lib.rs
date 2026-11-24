@@ -42,6 +42,7 @@
 //! # let _ = Rms::new();
 //! ```
 
+pub mod dsp;
 mod load;
 mod model;
 mod run;
