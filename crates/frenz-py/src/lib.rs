@@ -18,6 +18,8 @@ use pyo3::types::{PyBool, PyByteArray, PyBytes, PyDict, PyTuple};
 use tokio::task::JoinHandle;
 
 use frenz_model::streams::{self, Detail, End, Note, Streams};
+
+mod model;
 use tokio::runtime::Runtime;
 
 create_exception!(openfrenz, FrenzError, PyException, "Base class for openfrenz errors.");
@@ -522,6 +524,8 @@ struct Band {
     /// Sample buffers. They outlive `close()`, so what was buffered can still be read afterwards.
     streams: Arc<Streams>,
     pump: JoinHandle<()>,
+    /// Whether a lost link is retried.
+    reconnects: bool,
 }
 
 /// How a connection feeds its buffers.
@@ -540,12 +544,21 @@ impl Band {
         Ok(Self {
             streams,
             pump,
+            reconnects: feed.reconnects,
             state: Mutex::new(State::Open(Open {
                 band: Arc::new(band),
                 recorder,
             })),
             recording,
         })
+    }
+
+    /// The connection and whether it reconnects, for running a model on it.
+    fn model_feed(&self) -> PyResult<(Arc<frenz::Band>, bool)> {
+        match &*self.state.lock().unwrap_or_else(PoisonError::into_inner) {
+            State::Open(open) => Ok((open.band.clone(), self.reconnects)),
+            State::Closed(_) => Err(Disconnected::new_err("the band is closed")),
+        }
     }
 
     fn read_chunk(&self, py: Python<'_>, name: &str, timeout: Option<f64>) -> PyResult<Option<Py<PyAny>>> {
@@ -1001,6 +1014,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(connect, module)?)?;
     module.add_function(wrap_pyfunction!(replay, module)?)?;
     module.add_function(wrap_pyfunction!(synth, module)?)?;
+    model::register(module)?;
     module.add("FrenzError", py.get_type::<FrenzError>())?;
     module.add("BandNotFound", py.get_type::<BandNotFound>())?;
     module.add("BluetoothError", py.get_type::<BluetoothError>())?;

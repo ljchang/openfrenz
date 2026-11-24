@@ -15,7 +15,8 @@ crate-type = ["cdylib"]
 [dependencies]
 frenz = { workspace = true }
 frenz-export = { workspace = true }
-frenz-model = { workspace = true }
+frenz-model = { workspace = true, features = ["hub"] }
+serde_json = "1"
 frenz-cli = { workspace = true }
 pyo3 = { version = "0.30", features = ["abi3-py310"] }
 tokio = { version = "1.54", features = ["rt-multi-thread", "sync", "time"] }
