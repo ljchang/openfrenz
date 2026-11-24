@@ -14,6 +14,7 @@ nav = [
     { "Command line" = "CLI.md" },
     { "Python" = "PYTHON.md" },
     { "Rust" = "RUST.md" },
+    { "Models and signal processing" = "MODELS.md" },
   ] },
   { "Reference" = [
     { "Python API" = "PYTHON_API.md" },
@@ -55,3 +56,4 @@ pymdownx.highlight.anchor_linenums = true
 pymdownx.highlight.pygments_lang_class = true
 pymdownx.inlinehilite = {}
 pymdownx.superfences = {}
+pymdownx.tabbed.alternate_style = true

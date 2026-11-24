@@ -97,6 +97,47 @@ are zero on the hardware tested; `health()` counts any sample where one is not
 Up to 4096 unread events are kept; older ones are dropped and counted in `health()`
 (`events_dropped`).
 
+## `dsp`
+
+Signal-processing functions on NumPy arrays; a signal is `(n,)` or `(channels, n)`. Described in
+[Models and signal processing](MODELS.md).
+
+| Name | Returns | Notes |
+|---|---|---|
+| `dsp.Filter(steps, rate_hz, start="zero")` | callable | `f(x)` filters and keeps state; `f.filtfilt(x)` filters both ways without state; `f.reset()` |
+| `dsp.periodogram(x, rate_hz)` | `(frequencies, density)` | whole signal, mean removed, Hann window |
+| `dsp.welch(x, rate_hz, segment)` | `(frequencies, density)` | averaged over half-overlapping stretches |
+| `dsp.band_power(frequencies, density, low_hz, high_hz)` | array | lower edge included, upper excluded |
+| `dsp.analytic(x)` | `(amplitude, phase)` | envelope and phase of a band-limited signal |
+| `dsp.morlet(x, rate_hz, hz, cycles=6.0)` | `(amplitude, phase)` | amplitude in signal units |
+| `dsp.coherence(x, y, rate_hz, segment)` | `(frequencies, coherence)` | two single channels |
+| `dsp.coupling(phase, amplitude, bins=18)` | `Coupling` | `modulation_index`, `mean_vector_length`, `preferred_phase` |
+| `dsp.heart(ppg, rate_hz)` | `Heart` | `beats`, `rate_bpm`, `sdnn_ms`, `rmssd_ms`, `quality` |
+| `dsp.asr_calibrate(reference, rate_hz, cutoff=20.0)` | `(mixing, threshold)` | from clean `(channels, n)` data |
+| `dsp.Asr(mixing, threshold, max_removed=0.66, window_s=0.5)` | callable | `a(x, rate_hz)` cleans and keeps state; `a.reset()` |
+
+Invalid settings raise `ValueError`.
+
+## `Pipeline`
+
+`Pipeline(source)` loads a model from a folder or a Hugging Face repository (`owner/name` or
+`owner/name@revision`). A missing or inconsistent `config.json` raises `ValueError`.
+
+| Member | Returns | Notes |
+|---|---|---|
+| `name`, `version` | `str` | from `config.json` |
+| `folder` | `Path` | where the files are on this computer |
+| `inputs` | `dict[str, int]` | samples per step of each stream; the first sets the steps |
+| `outputs` | `tuple[str, ...]` | names of the values a step returns |
+| `step(data)` | `dict` or `None` | one step from `{stream: (channels, samples) array}`; `None` while blocks warm up |
+| `reset()` | | forgets everything carried from earlier steps |
+| `run(recording)` | `DataFrame` | `t` and one column per output, from a `.sqlite` recording, with a fresh copy of the model. `.attrs["missed"]` counts skipped steps by the stream that was missing. Raises `FrenzError` if the recording lacks a required stream altogether |
+| `stream(band)` | `ModelStream` | iterate for `{"t": ..., output: ...}` per step until the band ends, with a fresh copy of the model started at the call. `.read(timeout)` returns the next step or `None` if none completed in time; `.missed` counts skipped steps by the stream that was missing |
+
+`step` and `reset` act on the object's own copy of the model; `run` and `stream` each start a
+fresh one, so they do not disturb it or each other. A model streaming from a band reads through
+its own buffers and does not take samples away from `band.read()`.
+
 ## Commands
 
 `get_firmware_version`, `get_battery`, `get_serial_number`, `get_device_name`, `get_device_time`,
