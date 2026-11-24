@@ -385,10 +385,26 @@ struct Wavelet {
     log: bool,
 }
 
+/// Most multiply-adds a wavelet node may spend on one step. A wavelet is as long as its cycles
+/// over its frequency, so without a limit a config could ask for hours of work per step.
+const WAVELET_BUDGET: f64 = 2e8;
+
 impl Op for Wavelet {
     fn reset(&mut self) {}
     fn run(&mut self, inputs: &[&Value]) -> Result<Option<Value>, String> {
         let signal = one_signal(inputs)?;
+        let samples = signal.data.first().map_or(0, Vec::len) as f64;
+        // Samples in each wavelet (eight spreads of its Gaussian), summed over the frequencies.
+        let lengths: f64 = self
+            .frequencies
+            .iter()
+            .map(|hz| 8.0 * self.cycles / (2.0 * std::f64::consts::PI * hz) * signal.rate_hz)
+            .sum();
+        if samples * lengths * signal.data.len() as f64 > WAVELET_BUDGET {
+            return Err(
+                "these frequencies and cycles are too much work for one step: use fewer, or higher, frequencies".into(),
+            );
+        }
         let (mut names, mut values) = (Vec::new(), Vec::new());
         for (channel, x) in signal.channels.iter().zip(&signal.data) {
             let trim = ((self.trim_s * signal.rate_hz).round() as usize).min(x.len() / 2);
@@ -698,7 +714,6 @@ pub(crate) fn build(op: &str, config: &Json, weights: &Weights) -> Result<Box<dy
                 .and_then(Json::as_array)
                 .ok_or("needs frequencies: a list of Hz")?
                 .iter()
-                .take(256)
                 .map(|f| {
                     // A wavelet's length grows with cycles over frequency; both are kept sane.
                     f.as_f64()
