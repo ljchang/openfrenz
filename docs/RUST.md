@@ -196,6 +196,74 @@ cargo run -p frenz --example replay
 This is how the test suite runs in CI without hardware, and it is a good way to test your own
 processing on a real session you recorded earlier.
 
+## Run a model
+
+`frenz-model` runs a model step by step, the same way on a recording and on a band. A model says
+which streams it reads and how much of each makes one step, and returns named values per step:
+
+```rust
+use frenz_model::{Input, Model, ModelError, Spec, Step};
+
+struct Mine { spec: Spec /* and whatever the model carries between steps */ }
+
+impl Model for Mine {
+    fn spec(&self) -> &Spec { &self.spec }
+    fn reset(&mut self) { /* forget everything carried from earlier steps */ }
+    fn step(&mut self, step: &Step) -> Result<Option<Vec<f64>>, ModelError> {
+        let eeg = step.get("eeg").ok_or("no eeg")?;   // eeg.values[channel][sample], eeg.t[sample]
+        Ok(Some(vec![/* one value per output name */]))
+    }
+}
+```
+
+The inputs in the spec can be any stream the band sends:
+
+| Input | What a step gets |
+|---|---|
+| `Input::samples("eeg", 250)` | exactly 250 consecutive samples; the step is skipped if they are not all there |
+| `Input::samples("ppg", 50).preferred()` | the same when the stream is there, and the step runs without it otherwise (`step.get("ppg")` is `None`) |
+| `Input::arrived("heart_rate")` | whatever arrived during the step, possibly nothing; for streams without a steady rate |
+
+The first input sets the steps and every other stream is cut to match. Stream names are those of
+`frenz_model::streams::names()`: `eeg`, `accel`, `gyro`, `ppg`, `heart_rate`, `spo2`, `battery`
+and `contact`. Values are raw counts.
+
+```rust
+// A recording, as fast as the model runs:
+let outputs = frenz_model::run_recording(model, Path::new("session.sqlite"))?;
+
+// A connected or replayed band, one output as each step completes:
+let mut live = frenz_model::Live::new(model, &band, true)?;
+while let Some(output) = live.next().await? { /* output.t, output.values */ }
+```
+
+The model is reset at the start, at every new segment and after every step that had to be skipped
+because data was missing, so it never carries state across a hole. Repeated and frozen packets
+are left out. Live, pauses and lost data are recognised by when packets arrive, so replay a
+recording at its recorded pace to see what a live run would have given, and use `run_recording`
+to score it quickly. See [`examples/rms.rs`](https://github.com/ljchang/openfrenz/blob/main/crates/frenz-model/examples/rms.rs):
+
+```sh
+cargo run -p frenz-model --example rms
+```
+
+### Model files
+
+A trained model is a folder holding `config.json` and usually `model.safetensors`. `config.json`
+names the kind of model under `openfrenz_model`, and a program lists the kinds it was built with:
+
+```rust
+let registry = frenz_model::Registry::new()
+    .with("mine", |dir| Ok(Box::new(Mine::from_dir(dir)?)));
+let model = registry.load("owner/name")?;       // a folder, or a Hugging Face repository
+```
+
+Loading from the Hugging Face Hub needs the `hub` feature. A repository is written `owner/name`
+or `owner/name@revision`; files are kept per commit under `~/.cache/openfrenz`. Private
+repositories use the token in `HF_TOKEN` or the one saved by the Hugging Face command-line login.
+The files hold numbers and settings only: the code for a kind of model has to be part of the
+program that loads it.
+
 ## Only the decoders
 
 `frenz-proto` has no dependencies and builds without the standard library

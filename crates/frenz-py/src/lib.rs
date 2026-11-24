@@ -4,8 +4,6 @@
 //! Bluetooth, decoding and recording run on a Tokio runtime owned by this module. Python threads
 //! only wait on it, without holding the interpreter lock, and are interrupted by Ctrl-C.
 
-mod streams;
-
 use std::future::Future;
 use std::path::{MAIN_SEPARATOR, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
@@ -19,7 +17,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyByteArray, PyBytes, PyDict, PyTuple};
 use tokio::task::JoinHandle;
 
-use crate::streams::{Detail, End, Note, Streams};
+use frenz_model::streams::{self, Detail, End, Note, Streams};
 use tokio::runtime::Runtime;
 
 create_exception!(openfrenz, FrenzError, PyException, "Base class for openfrenz errors.");

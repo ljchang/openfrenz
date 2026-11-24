@@ -1,8 +1,9 @@
-//! Per-stream sample buffers, filled from the band's events and read from Python.
+//! Live sample buffers: one ring buffer per stream, filled from the band's events.
 //!
-//! A task on the runtime turns every decoded packet into rows in a ring buffer per stream. Python
-//! never takes part in that, so a slow reader cannot delay Bluetooth, decoding or recording; it
-//! can only fall behind its own buffer, which is counted and reported.
+//! A task on the runtime turns every decoded packet into rows in a ring buffer per stream, each
+//! row with an estimated acquisition time, its segment and its position in the segment. A slow
+//! reader cannot delay Bluetooth, decoding or recording; it can only fall behind its own buffer,
+//! which is counted and reported.
 
 use std::collections::VecDeque;
 use std::sync::{Mutex, PoisonError};
@@ -26,43 +27,43 @@ const SLOW_ROWS_PER_SECOND: f64 = 2.0;
 
 /// One sample as Python receives it.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct Row {
+pub struct Row {
     /// Estimated acquisition time (Unix seconds).
-    pub(crate) t: f64,
+    pub t: f64,
     /// Arrival time of the packet that carried the sample (Unix seconds).
-    pub(crate) arrival: f64,
+    pub arrival: f64,
     /// The band's clock for the packet (whole seconds).
-    pub(crate) device_time: i64,
+    pub device_time: i64,
     /// Uninterrupted stretch the sample belongs to.
-    pub(crate) segment: i64,
+    pub segment: i64,
     /// Position of the sample within its segment, counting samples that were lost.
-    pub(crate) index: i64,
+    pub index: i64,
     /// The packet repeated the previous packet's samples.
-    pub(crate) duplicate: bool,
+    pub duplicate: bool,
     /// Every sample in the packet was identical (frozen sensor output).
-    pub(crate) held: bool,
+    pub held: bool,
     /// Channel values, in the stream's channel order.
-    pub(crate) values: [i32; CHANNELS],
+    pub values: [i32; CHANNELS],
 }
 
 /// Samples handed to Python in one call.
 #[derive(Debug)]
-pub(crate) struct Chunk {
+pub struct Chunk {
     /// Stream name.
-    pub(crate) stream: &'static str,
+    pub stream: &'static str,
     /// Channel names.
-    pub(crate) channels: &'static [&'static str],
+    pub channels: &'static [&'static str],
     /// Whether the stream has a steady sample rate (and so segments and repeat flags).
-    pub(crate) sampled: bool,
+    pub sampled: bool,
     /// The samples, oldest first.
-    pub(crate) rows: Vec<Row>,
+    pub rows: Vec<Row>,
     /// Samples that left the buffer unread before the first of these.
-    pub(crate) dropped: u64,
+    pub dropped: u64,
 }
 
 /// Why no more data will come.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum End {
+pub enum End {
     /// The replay finished or the band was closed.
     Finished,
     /// The link was lost and is not coming back.
@@ -138,31 +139,43 @@ const BATTERY: usize = 6;
 const CONTACT: usize = 7;
 
 /// Stream names, in a fixed order.
-pub(crate) fn names() -> impl Iterator<Item = &'static str> {
+pub fn names() -> impl Iterator<Item = &'static str> {
     SPECS.iter().map(|s| s.name)
 }
 
 /// Index of the stream called `name`.
-pub(crate) fn index(name: &str) -> Option<usize> {
+pub fn index(name: &str) -> Option<usize> {
     SPECS.iter().position(|s| s.name == name)
+}
+
+/// Channel names of the stream called `name`, in the order its values are delivered.
+pub fn channels(name: &str) -> Option<&'static [&'static str]> {
+    SPECS.iter().find(|s| s.name == name).map(|s| s.channels)
+}
+
+/// Nominal sample rate of the stream called `name`; `None` for an unknown stream and for one
+/// without a steady rate.
+pub fn rate_hz(name: &str) -> Option<f64> {
+    SPECS.iter().find(|s| s.name == name).and_then(|s| s.rate_hz)
 }
 
 /// Counters for one stream, for `health()`.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct StreamHealth {
-    pub(crate) name: &'static str,
+pub struct StreamHealth {
+    /// Stream name.
+    pub name: &'static str,
     /// Samples received since the connection opened.
-    pub(crate) samples: u64,
+    pub samples: u64,
     /// Samples currently in the buffer.
-    pub(crate) buffered: usize,
+    pub buffered: usize,
     /// Samples that left the buffer before `read()` took them.
-    pub(crate) dropped: u64,
+    pub dropped: u64,
     /// Samples with a non-zero value in a column that is normally zero and is not delivered.
-    pub(crate) inactive_nonzero: u64,
+    pub inactive_nonzero: u64,
     /// Segment of the newest sample.
-    pub(crate) segment: i64,
+    pub segment: i64,
     /// Live clock fit of the current segment, for streams with a steady rate.
-    pub(crate) fit: Option<ClockFit>,
+    pub fit: Option<ClockFit>,
 }
 
 struct Stream {
@@ -356,7 +369,7 @@ const NOTE_CAPACITY: usize = 4096;
 
 /// A value attached to an event.
 #[derive(Debug, Clone)]
-pub(crate) enum Detail {
+pub enum Detail {
     /// A count or number.
     Int(u64),
     /// A name or message.
@@ -365,13 +378,13 @@ pub(crate) enum Detail {
 
 /// Something that happened on the connection, as Python receives it.
 #[derive(Debug, Clone)]
-pub(crate) struct Note {
+pub struct Note {
     /// What happened, e.g. `"sequence_gap"`.
-    pub(crate) kind: &'static str,
+    pub kind: &'static str,
     /// When (Unix seconds).
-    pub(crate) t: f64,
+    pub t: f64,
     /// Further facts, by name.
-    pub(crate) detail: Vec<(&'static str, Detail)>,
+    pub detail: Vec<(&'static str, Detail)>,
 }
 
 fn unix(mono_ns: i64) -> f64 {
@@ -449,14 +462,15 @@ impl Inner {
 }
 
 /// The buffers of one connection.
-pub(crate) struct Streams {
+pub struct Streams {
     inner: Mutex<Inner>,
     /// Bumped whenever data arrives or the connection ends, to wake waiting readers.
     changed: watch::Sender<u64>,
 }
 
 impl Streams {
-    pub(crate) fn new(buffer_seconds: f64) -> Self {
+    /// Empty buffers holding up to `buffer_seconds` of each stream.
+    pub fn new(buffer_seconds: f64) -> Self {
         Self {
             inner: Mutex::new(Inner {
                 streams: SPECS.iter().map(|spec| Stream::new(spec, buffer_seconds)).collect(),
@@ -479,28 +493,28 @@ impl Streams {
     }
 
     /// Marks the connection as over and wakes every waiting reader.
-    pub(crate) fn end(&self, end: End) {
+    pub fn end(&self, end: End) {
         self.with(|inner| inner.ended = Some(end));
         self.wake();
     }
 
     /// Why the connection is over, if it is.
-    pub(crate) fn ended(&self) -> Option<End> {
+    pub fn ended(&self) -> Option<End> {
         self.with(|inner| inner.ended)
     }
 
     /// Events the buffers never saw because this module fell behind the band's event queue.
-    pub(crate) fn events_missed(&self) -> u64 {
+    pub fn events_missed(&self) -> u64 {
         self.with(|inner| inner.events_missed)
     }
 
     /// Events that left the queue before Python read them.
-    pub(crate) fn events_dropped(&self) -> u64 {
+    pub fn events_dropped(&self) -> u64 {
         self.with(|inner| inner.notes_dropped)
     }
 
     /// Waits for the next event. `Err` means the connection is over and every event was read.
-    pub(crate) async fn next_note(&self) -> Result<Note, End> {
+    pub async fn next_note(&self) -> Result<Note, End> {
         let mut changed = self.changed.subscribe();
         loop {
             let step = self.with(|inner| match (inner.notes.pop_front(), inner.ended) {
@@ -517,7 +531,8 @@ impl Streams {
         }
     }
 
-    pub(crate) fn health(&self) -> Vec<StreamHealth> {
+    /// Counters for every stream.
+    pub fn health(&self) -> Vec<StreamHealth> {
         self.with(|inner| {
             inner
                 .streams
@@ -535,31 +550,36 @@ impl Streams {
         })
     }
 
+    /// Unread samples of stream `index`, without waiting. `None` when there is nothing new yet;
+    /// `Err` when the connection is over and everything has been read.
+    pub fn try_read(&self, index: usize) -> Option<Result<Chunk, End>> {
+        self.with(|inner| {
+            let taken = inner.streams.get_mut(index).and_then(Stream::take);
+            if let Some(chunk) = taken.as_ref().filter(|chunk| chunk.dropped > 0) {
+                // The reader was too slow for its buffer: say so as an event too.
+                inner.note(Note {
+                    kind: "lagged",
+                    t: unix(frenz::clock::mono_ns()),
+                    detail: vec![
+                        ("stream", Detail::Text(chunk.stream.to_owned())),
+                        ("dropped", Detail::Int(chunk.dropped)),
+                    ],
+                });
+            }
+            match (taken, inner.ended) {
+                (Some(chunk), _) => Some(Ok(chunk)),
+                (None, Some(end)) => Some(Err(end)),
+                (None, None) => None,
+            }
+        })
+    }
+
     /// Waits for unread samples on stream `index`. `Err` means the connection is over and
     /// everything has been read.
-    pub(crate) async fn read(&self, index: usize) -> Result<Chunk, End> {
+    pub async fn read(&self, index: usize) -> Result<Chunk, End> {
         let mut changed = self.changed.subscribe();
         loop {
-            let step = self.with(|inner| {
-                let taken = inner.streams.get_mut(index).and_then(Stream::take);
-                if let Some(chunk) = taken.as_ref().filter(|chunk| chunk.dropped > 0) {
-                    // The reader was too slow for its buffer: say so as an event too.
-                    inner.note(Note {
-                        kind: "lagged",
-                        t: unix(frenz::clock::mono_ns()),
-                        detail: vec![
-                            ("stream", Detail::Text(chunk.stream.to_owned())),
-                            ("dropped", Detail::Int(chunk.dropped)),
-                        ],
-                    });
-                }
-                match (taken, inner.ended) {
-                    (Some(chunk), _) => Some(Ok(chunk)),
-                    (None, Some(end)) => Some(Err(end)),
-                    (None, None) => None,
-                }
-            });
-            if let Some(result) = step {
+            if let Some(result) = self.try_read(index) {
                 return result;
             }
             if changed.changed().await.is_err() {
@@ -569,7 +589,7 @@ impl Streams {
     }
 
     /// The most recent `seconds` of stream `index`, without consuming it.
-    pub(crate) fn latest(&self, index: usize, seconds: f64) -> Option<Chunk> {
+    pub fn latest(&self, index: usize, seconds: f64) -> Option<Chunk> {
         self.with(|inner| inner.streams.get(index).map(|s| s.latest(seconds)))
     }
 
@@ -691,7 +711,7 @@ impl Streams {
 
 /// Feeds `streams` from the band's events until the band goes away. `reconnects` says whether a
 /// lost link is retried; `end` is what a final disconnect means for this connection.
-pub(crate) async fn pump(streams: std::sync::Arc<Streams>, mut events: Receiver<Event>, reconnects: bool, end: End) {
+pub async fn pump(streams: std::sync::Arc<Streams>, mut events: Receiver<Event>, reconnects: bool, end: End) {
     loop {
         match events.recv().await {
             Ok(event) => {
