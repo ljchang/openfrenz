@@ -75,6 +75,11 @@ pub struct Pipeline {
     outputs: Vec<usize>,
 }
 
+/// Most samples of one stream in a step, and most nodes in a pipeline. Configs can come from
+/// anywhere, so their sizes are bounded before anything is allocated.
+const MAX_SAMPLES: u64 = 100_000;
+const MAX_NODES: usize = 1024;
+
 /// Names and values of a step's outputs.
 type Named = (Vec<String>, Vec<f64>);
 
@@ -110,8 +115,13 @@ impl Pipeline {
             entry
                 .get("samples")
                 .and_then(Json::as_u64)
+                .filter(|n| (1..=MAX_SAMPLES).contains(n))
                 .map(|n| n as usize)
-                .ok_or_else(|| bad(format!("{what} needs samples")))
+                .ok_or_else(|| {
+                    bad(format!(
+                        "{what} needs samples: a whole number between 1 and {MAX_SAMPLES}"
+                    ))
+                })
         };
         let step = config.get("step").ok_or_else(|| bad("no step"))?;
         let clock = step
@@ -162,11 +172,14 @@ impl Pipeline {
                 Err(bad(format!("{name:?} is neither an input stream nor an earlier node")))
             }
         };
-        for entry in config
+        let listed = config
             .get("nodes")
             .and_then(Json::as_array)
-            .ok_or_else(|| bad("no nodes"))?
-        {
+            .ok_or_else(|| bad("no nodes"))?;
+        if listed.len() > MAX_NODES {
+            return Err(bad(format!("more than {MAX_NODES} nodes")));
+        }
+        for entry in listed {
             let name = entry
                 .get("name")
                 .and_then(Json::as_str)
@@ -219,6 +232,7 @@ impl Pipeline {
                 max_step_seconds: config
                     .get("max_step_seconds")
                     .and_then(Json::as_f64)
+                    .filter(|s| s.is_finite() && *s > 0.0)
                     .unwrap_or(1.1 * length),
             },
             nodes,

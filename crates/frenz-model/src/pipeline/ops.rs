@@ -52,13 +52,29 @@ fn number(config: &Json, key: &str) -> Option<f64> {
     config.get(key).and_then(Json::as_f64)
 }
 
+/// The largest count a config may ask for: steps to keep, samples in a stretch, phase bins.
+/// Configs can come from anywhere, so nothing they say may make a block arbitrarily large.
+const MAX_COUNT: usize = 100_000;
+
 fn count(config: &Json, key: &str, default: usize) -> Result<usize, String> {
     match config.get(key) {
         None => Ok(default),
         Some(v) => v
             .as_u64()
             .map(|n| n as usize)
-            .ok_or_else(|| format!("{key} must be a whole number")),
+            .filter(|n| (1..=MAX_COUNT).contains(n))
+            .ok_or_else(|| format!("{key} must be a whole number between 1 and {MAX_COUNT}")),
+    }
+}
+
+/// A number of seconds that is neither negative nor absurd; 0 if not given.
+fn duration(config: &Json, key: &str) -> Result<f64, String> {
+    match config.get(key) {
+        None => Ok(0.0),
+        Some(v) => v
+            .as_f64()
+            .filter(|s| (0.0..=3600.0).contains(s))
+            .ok_or_else(|| format!("{key} must be a number of seconds between 0 and 3600")),
     }
 }
 
@@ -671,8 +687,8 @@ pub(crate) fn build(op: &str, config: &Json, weights: &Weights) -> Result<Box<dy
                     .ok_or("needs amplitude_band: [low, high]")?,
             )?,
             order: count(config, "order", 2)?,
-            bins: count(config, "bins", 18)?,
-            trim_s: number(config, "trim_s").unwrap_or(0.0),
+            bins: count(config, "bins", 18)?.clamp(2, 360),
+            trim_s: duration(config, "trim_s")?,
             steps: count(config, "average_steps", 1)?,
             recent: Vec::new(),
         }),
@@ -682,14 +698,20 @@ pub(crate) fn build(op: &str, config: &Json, weights: &Weights) -> Result<Box<dy
                 .and_then(Json::as_array)
                 .ok_or("needs frequencies: a list of Hz")?
                 .iter()
+                .take(256)
                 .map(|f| {
+                    // A wavelet's length grows with cycles over frequency; both are kept sane.
                     f.as_f64()
-                        .filter(|f| *f > 0.0)
-                        .ok_or_else(|| format!("{f} is not a frequency"))
+                        .filter(|f| *f >= 0.1)
+                        .ok_or_else(|| format!("{f} is not a frequency of 0.1 Hz or more"))
                 })
                 .collect::<Result<_, _>>()?,
-            cycles: number(config, "cycles").unwrap_or(6.0),
-            trim_s: number(config, "trim_s").unwrap_or(0.0),
+            cycles: match number(config, "cycles") {
+                None => 6.0,
+                Some(cycles) if (1.0..=64.0).contains(&cycles) => cycles,
+                Some(_) => return Err("cycles must lie between 1 and 64".into()),
+            },
+            trim_s: duration(config, "trim_s")?,
             log: flag(config, "log"),
         }),
         "heart" => Box::new(HeartOp {
@@ -723,8 +745,8 @@ pub(crate) fn build(op: &str, config: &Json, weights: &Weights) -> Result<Box<dy
             }),
             None => {
                 let half_life = number(config, "half_life_steps").ok_or("needs weights, or half_life_steps")?;
-                if half_life <= 0.0 {
-                    return Err("half_life_steps must be positive".into());
+                if !(half_life > 0.0 && half_life.is_finite()) {
+                    return Err("half_life_steps must be a positive number".into());
                 }
                 Box::new(Normalize::Running {
                     rate: 1.0 - 0.5f64.powf(1.0 / half_life),
