@@ -5,7 +5,7 @@ members = ["crates/frenz-proto", "crates/frenz", "crates/frenz-export", "crates/
 [workspace.package]
 version = "0.3.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.89"
 license = "MIT"
 repository = "https://github.com/ljchang/openfrenz"
 description = "Unofficial open-source interface to the FRENZ brainband over Bluetooth LE"
