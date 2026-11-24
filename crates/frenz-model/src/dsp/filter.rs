@@ -50,6 +50,14 @@ fn check(what: &str, ok: bool) -> Result<(), Error> {
     }
 }
 
+/// The highest Butterworth order accepted. Far above what is useful, and it keeps a design
+/// described by a file from being arbitrarily large.
+pub const MAX_ORDER: usize = 16;
+
+fn check_order(order: usize) -> Result<(), Error> {
+    check("the order must be between 1 and 16", (1..=MAX_ORDER).contains(&order))
+}
+
 /// Poles of the analog Butterworth low-pass of this order with cut-off 1.
 fn prototype(order: usize) -> Vec<Complex64> {
     (0..order)
@@ -133,7 +141,7 @@ impl Design {
 
     /// Butterworth low-pass of `order` with its -3 dB point at `high_hz`.
     pub fn lowpass(order: usize, high_hz: f64, rate_hz: f64) -> Result<Self, Error> {
-        check("the order must be at least 1", order > 0)?;
+        check_order(order)?;
         check(
             "the cut-off must lie between 0 and half the sample rate",
             high_hz > 0.0 && high_hz < rate_hz / 2.0,
@@ -145,7 +153,7 @@ impl Design {
 
     /// Butterworth high-pass of `order` with its -3 dB point at `low_hz`.
     pub fn highpass(order: usize, low_hz: f64, rate_hz: f64) -> Result<Self, Error> {
-        check("the order must be at least 1", order > 0)?;
+        check_order(order)?;
         check(
             "the cut-off must lie between 0 and half the sample rate",
             low_hz > 0.0 && low_hz < rate_hz / 2.0,
@@ -158,7 +166,7 @@ impl Design {
     /// Butterworth band-pass with -3 dB points at `low_hz` and `high_hz`. Like SciPy's, a
     /// band-pass of `order` has `2 * order` poles.
     pub fn bandpass(order: usize, low_hz: f64, high_hz: f64, rate_hz: f64) -> Result<Self, Error> {
-        check("the order must be at least 1", order > 0)?;
+        check_order(order)?;
         check(
             "the band must satisfy 0 < low < high < half the sample rate",
             low_hz > 0.0 && low_hz < high_hz && high_hz < rate_hz / 2.0,

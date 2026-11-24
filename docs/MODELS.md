@@ -386,7 +386,9 @@ model = openfrenz.Pipeline("owner/name")            # or "owner/name@v1.0", "own
 Files are downloaded once per commit into `~/.cache/openfrenz` (set `OPENFRENZ_CACHE` to move
 it); a branch name is looked up each time to see which commit it points to. Private repositories
 use the token in `HF_TOKEN`, or the one saved by the Hugging Face command-line login. The files hold numbers and
-settings only and are never executed.
+settings only and are never executed, and the sizes a `config.json` can ask for are bounded
+(samples per step, filter order, steps kept, and so on), so a model from an unknown source can
+be slow or wrong but cannot run code. Model files over 512 MB are not downloaded.
 
 ## Models in code
 

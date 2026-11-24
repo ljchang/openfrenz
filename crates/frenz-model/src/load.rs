@@ -107,7 +107,7 @@ const FILES: [(&str, bool); 2] = [("config.json", true), ("model.safetensors", f
 
 /// Largest model file accepted.
 #[cfg(feature = "hub")]
-const MAX_BYTES: u64 = 2 << 30;
+const MAX_BYTES: u64 = 512 << 20;
 
 #[cfg(feature = "hub")]
 fn home() -> Option<PathBuf> {

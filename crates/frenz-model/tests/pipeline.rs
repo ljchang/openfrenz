@@ -150,6 +150,18 @@ fn mistakes_in_a_config_are_reported_when_it_is_loaded() {
     );
     assert!(message(|c| c["step"]["stream"] = json!("battery")).contains("steady rate"));
     assert!(message(|c| c["outputs"] = json!(["clean"])).contains("not features"));
+    // Sizes a file asks for are bounded before anything is built.
+    assert!(message(|c| c["step"]["samples"] = json!(4_000_000_000u64)).contains("between 1 and 100000"));
+    assert!(message(|c| c["nodes"][8]["steps"] = json!(1_000_000_000u64)).contains("node recent"));
+    assert!(message(|c| c["nodes"][0]["steps"][2]["order"] = json!(5000)).contains("between 1 and 16"));
+    assert!(message(|c| c["nodes"][3]["segment"] = json!(0)).contains("node coh"));
+    assert!(
+        message(|c| {
+            c["nodes"][1] =
+                json!({"name": "power", "op": "wavelet", "in": "clean", "frequencies": [1e-9], "cycles": 6});
+        })
+        .contains("not a frequency")
+    );
 }
 
 #[test]
