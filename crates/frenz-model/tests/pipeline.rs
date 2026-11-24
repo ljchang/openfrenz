@@ -371,3 +371,18 @@ fn a_stream_the_model_can_do_without_does_not_hold_it_up() {
         "inputs": {"battery": {"samples": 1}}, "nodes": [], "outputs": []});
     assert!(matches!(Pipeline::from_dir(model_dir(&wrong, &[]).path()), Err(Error::Files(m)) if m.contains("arrived")));
 }
+
+#[test]
+fn a_config_cannot_ask_for_unbounded_work() {
+    // A wavelet is as long as its cycles over its frequency: a long step of a very low
+    // frequency would take hours, and is refused when the config is loaded.
+    let config = json!({"openfrenz_model": "pipeline", "step": {"stream": "eeg", "samples": 100_000}, "nodes": [
+        {"name": "w", "op": "wavelet", "in": "eeg", "frequencies": [0.1], "cycles": 64}], "outputs": ["w"]});
+    assert!(
+        matches!(Pipeline::from_dir(model_dir(&config, &[]).path()), Err(Error::Files(m)) if m.contains("too much work"))
+    );
+    // The same node at a sensible size loads.
+    let config = json!({"openfrenz_model": "pipeline", "step": {"stream": "eeg", "samples": 250}, "nodes": [
+        {"name": "w", "op": "wavelet", "in": "eeg", "frequencies": [2, 6, 10, 20, 40], "cycles": 6}], "outputs": ["w"]});
+    assert!(Pipeline::from_dir(model_dir(&config, &[]).path()).is_ok());
+}
