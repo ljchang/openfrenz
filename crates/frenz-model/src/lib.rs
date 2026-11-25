@@ -55,9 +55,9 @@ mod stepper;
 pub mod streams;
 
 pub use export::{Exported, export_models};
-#[cfg(feature = "hub")]
-pub use load::fetch;
 pub use load::{BUILT_IN, CONFIG_KEY, Registry, fingerprint, fingerprint_dir, kind, resolve};
+#[cfg(feature = "hub")]
+pub use load::{fetch, fetch_with, resolve_with};
 pub use model::{Block, Input, Model, ModelError, Output, Spec, Step, Take};
 pub use pipeline::Pipeline;
 pub use run::{Live, Run, run_recording, run_session};
@@ -89,6 +89,10 @@ pub enum Error {
     /// The model files could not be fetched.
     #[error("fetching model files: {0}")]
     Fetch(String),
+    /// A Hugging Face repository could not be read: it is private and no token with access was
+    /// given, or it does not exist.
+    #[error("{0}")]
+    Access(String),
     /// Reading a recording failed.
     #[error(transparent)]
     Export(#[from] frenz_export::Error),

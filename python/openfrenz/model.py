@@ -16,7 +16,10 @@ class Pipeline:
 
     ``source`` is a folder holding ``config.json`` (and ``model.safetensors`` if any block needs
     stored numbers), the name of a model that comes with openfrenz (``openfrenz.MODELS``), or a
-    repository written ``owner/name`` or ``owner/name@revision``. Private
+    repository written ``owner/name`` or ``owner/name@revision``. A private repository is read with
+    ``token`` if given, otherwise with ``HF_TOKEN`` or the Hugging Face command-line login; a
+    repository fetched before is used from this computer's copy when Hugging Face cannot be
+    reached. Private
     repositories use the token in ``HF_TOKEN`` or the Hugging Face command-line login.
 
         model = openfrenz.Pipeline("my-model")
@@ -26,8 +29,8 @@ class Pipeline:
                 print(out)
     """
 
-    def __init__(self, source: str | Path):
-        self._native = _native.Pipeline(str(source))
+    def __init__(self, source: str | Path, token: str | None = None):
+        self._native = _native.Pipeline(str(source), token)
 
     @property
     def name(self) -> str:

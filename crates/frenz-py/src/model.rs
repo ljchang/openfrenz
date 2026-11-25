@@ -206,9 +206,10 @@ impl Asr {
 
 pub(crate) fn model_error(error: frenz_model::Error) -> PyErr {
     match error {
-        frenz_model::Error::Spec(_) | frenz_model::Error::Files(_) | frenz_model::Error::UnknownKind { .. } => {
-            PyValueError::new_err(error.to_string())
-        }
+        frenz_model::Error::Spec(_)
+        | frenz_model::Error::Files(_)
+        | frenz_model::Error::UnknownKind { .. }
+        | frenz_model::Error::Access(_) => PyValueError::new_err(error.to_string()),
         other => FrenzError::new_err(other.to_string()),
     }
 }
@@ -229,10 +230,13 @@ impl Pipeline {
 #[pymethods]
 impl Pipeline {
     /// `source` is a folder, the name of a model that comes with openfrenz, or a Hugging Face
-    /// repository (`owner/name` or `owner/name@revision`).
+    /// repository (`owner/name` or `owner/name@revision`), read with `token` if given.
     #[new]
-    fn new(py: Python<'_>, source: &str) -> PyResult<Self> {
-        let dir = py.detach(|| frenz_model::resolve(source)).map_err(model_error)?;
+    #[pyo3(signature = (source, token = None))]
+    fn new(py: Python<'_>, source: &str, token: Option<String>) -> PyResult<Self> {
+        let dir = py
+            .detach(|| frenz_model::resolve_with(source, token.as_deref()))
+            .map_err(model_error)?;
         let model = frenz_model::Pipeline::from_dir(&dir).map_err(model_error)?;
         Ok(Self {
             dir,

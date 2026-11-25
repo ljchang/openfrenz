@@ -261,8 +261,11 @@ let model = registry.load("owner/name")?;       // a folder, or a Hugging Face r
 ```
 
 Loading from the Hugging Face Hub needs the `hub` feature. A repository is written `owner/name`
-or `owner/name@revision`; files are kept per commit under `~/.cache/openfrenz`. Private
-repositories use the token in `HF_TOKEN` or the one saved by the Hugging Face command-line login.
+or `owner/name@revision`; files are kept per commit under `~/.cache/openfrenz`, and a branch
+fetched before still loads when Hugging Face cannot be reached. Private repositories use the token
+in `HF_TOKEN` or the one saved by the Hugging Face command-line login; programs that keep their own
+credentials pass one with `frenz_model::resolve_with(source, Some(token))` or `fetch_with`. A
+repository that cannot be read gives `Error::Access`, with a message saying what to do.
 The files hold numbers and settings only: the code for a kind of model has to be part of the
 program that loads it.
 
