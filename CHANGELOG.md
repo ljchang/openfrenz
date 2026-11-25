@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **`Pipeline::from_config`** builds a pipeline from a config in memory, checked as a folder's is; unknown
+  keys are ignored, so an editor can keep its own notes in the config.
 - **Private models with a token in hand.** `resolve_with` and `fetch_with` (Rust) and
   `Pipeline(source, token=...)` (Python) read Hugging Face repositories with a given token. A
   repository that cannot be read gives a new `Error::Access` saying whether a token or an invitation

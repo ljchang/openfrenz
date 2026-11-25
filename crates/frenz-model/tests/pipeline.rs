@@ -892,3 +892,27 @@ fn the_artifact_cleaner_options_change_what_they_say_and_nothing_else() {
         }
     }
 }
+
+#[test]
+fn a_pipeline_can_be_built_from_a_config_in_memory() {
+    let config = json!({
+        "openfrenz_model": "pipeline", "name": "made", "version": "1",
+        "step": { "stream": "eeg", "samples": 125 },
+        "nodes": [{ "name": "level", "op": "summary", "in": "eeg", "stats": ["sd"], "editor": { "x": 10, "y": 20 } }],
+        "outputs": ["level"],
+        "editor": { "notes": "anything" }
+    });
+    let model = Pipeline::from_config(&config).unwrap();
+    assert_eq!(model.spec().outputs[0], "forehead_right:sd");
+    // Blocks that need stored numbers have none to read.
+    let mut stored = config.clone();
+    stored["nodes"][0] = json!({ "name": "level", "op": "normalize", "in": "eeg", "weights": "z" });
+    assert!(Pipeline::from_config(&stored).is_err());
+    // Mistakes name the node.
+    let mut wrong = config;
+    wrong["nodes"][0]["stats"] = json!(["loudness"]);
+    match Pipeline::from_config(&wrong) {
+        Err(Error::Files(message)) => assert!(message.contains("node level"), "{message}"),
+        _ => panic!("a wrong statistic was accepted"),
+    }
+}
