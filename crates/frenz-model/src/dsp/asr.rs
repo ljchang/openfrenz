@@ -145,6 +145,86 @@ pub struct Asr {
     window_s: f64,
     /// The reconstruction applied at the end of the previous window; none before the first.
     previous: Option<DMatrix<f64>>,
+    /// A filter that shapes the data before its size is judged (not the data that is cleaned).
+    weighting: Option<Weighting>,
+    /// How many windows' covariances are averaged to judge each window.
+    average: usize,
+    recent: std::collections::VecDeque<DMatrix<f64>>,
+    /// Where the ease from one reconstruction into the next starts: 1 reaches the new one a sample
+    /// after the window's start, as in EEGLAB; 0 at its first sample.
+    blend_offset: f64,
+}
+
+/// A filter given by its coefficients, `b` over `a`, run on each channel with its own state.
+#[derive(Debug, Clone)]
+struct Weighting {
+    b: Vec<f64>,
+    a: Vec<f64>,
+    /// Per channel; empty until the first sample, which the filter starts settled on.
+    state: Vec<Vec<f64>>,
+}
+
+impl Weighting {
+    fn new(b: &[f64], a: &[f64]) -> Result<Self, Error> {
+        let order = b.len().max(a.len());
+        let lead = a.first().copied().unwrap_or(0.0);
+        if !(2..=64).contains(&order) || lead == 0.0 || !b.iter().chain(a).all(|v| v.is_finite()) {
+            return Err(Error::Spec(
+                "the weighting filter needs 2 to 64 finite coefficients and a nonzero a[0]".into(),
+            ));
+        }
+        let pad = |v: &[f64]| {
+            (0..order)
+                .map(|i| v.get(i).copied().unwrap_or(0.0) / lead)
+                .collect::<Vec<_>>()
+        };
+        Ok(Self {
+            b: pad(b),
+            a: pad(a),
+            state: Vec::new(),
+        })
+    }
+
+    /// The state in which a constant input of 1 gives a constant output, as SciPy's `lfilter_zi`.
+    fn settled(&self) -> Vec<f64> {
+        let n = self.b.len() - 1;
+        // (I - companion(a)ᵀ) z = b[1..] - a[1..] b[0]
+        let mut m = DMatrix::<f64>::identity(n, n);
+        for i in 0..n {
+            m[(i, 0)] += self.a[i + 1];
+            if i + 1 < n {
+                m[(i, i + 1)] -= 1.0;
+            }
+        }
+        let rhs = DVector::from_fn(n, |i, _| self.b[i + 1] - self.a[i + 1] * self.b[0]);
+        m.lu()
+            .solve(&rhs)
+            .map_or_else(|| vec![0.0; n], |z| z.iter().copied().collect())
+    }
+
+    fn process(&mut self, x: &DMatrix<f64>) -> DMatrix<f64> {
+        let (channels, samples) = x.shape();
+        if self.state.len() != channels {
+            let unit = self.settled();
+            self.state = (0..channels)
+                .map(|c| unit.iter().map(|z| z * x[(c, 0)]).collect())
+                .collect();
+        }
+        let n = self.b.len() - 1;
+        let mut out = DMatrix::zeros(channels, samples);
+        for (c, z) in self.state.iter_mut().enumerate() {
+            for k in 0..samples {
+                let v = x[(c, k)];
+                let y = self.b[0] * v + z[0];
+                for i in 0..n {
+                    let next = if i + 1 < n { z[i + 1] } else { 0.0 };
+                    z[i] = self.b[i + 1] * v + next - self.a[i + 1] * y;
+                }
+                out[(c, k)] = y;
+            }
+        }
+        out
+    }
 }
 
 impl Asr {
@@ -170,18 +250,45 @@ impl Asr {
             most: (max_removed * channels as f64).floor() as usize,
             window_s,
             previous: None,
+            weighting: None,
+            average: 1,
+            recent: std::collections::VecDeque::new(),
+            blend_offset: 1.0,
         })
+    }
+
+    /// Judges each window's size after this filter (`b` over `a`), as EEGLAB does with its spectral
+    /// weighting; the data cleaned is not filtered. The filter starts settled on the first sample.
+    pub fn with_weighting(mut self, b: &[f64], a: &[f64]) -> Result<Self, Error> {
+        self.weighting = Some(Weighting::new(b, a)?);
+        Ok(self)
+    }
+
+    /// Judges each window by the average covariance of it and the `windows - 1` before it.
+    pub fn with_average(mut self, windows: usize) -> Self {
+        self.average = windows.max(1);
+        self
+    }
+
+    /// Where the ease into a new reconstruction starts: 1 (the default, as in EEGLAB) or 0.
+    pub fn with_blend_offset(mut self, offset: f64) -> Self {
+        self.blend_offset = offset;
+        self
     }
 
     /// Forgets the previous window.
     pub fn reset(&mut self) {
         self.previous = None;
+        self.recent.clear();
+        if let Some(weighting) = &mut self.weighting {
+            weighting.state.clear();
+        }
     }
 
     /// The reconstruction for one window of data: the identity when nothing is too large.
-    fn reconstruction(&self, x: &DMatrix<f64>) -> DMatrix<f64> {
-        let channels = x.nrows();
-        let (values, vectors) = eigen(x * x.transpose() / x.ncols() as f64);
+    fn reconstruction(&self, covariance: DMatrix<f64>) -> DMatrix<f64> {
+        let channels = covariance.nrows();
+        let (values, vectors) = eigen(covariance);
         let limits = &self.threshold * &vectors;
         // Rising order: the smallest directions are always kept, so that never more than
         // `most` are removed.
@@ -230,12 +337,26 @@ impl Asr {
                 from + window
             };
             let part = data.columns(from, to - from).into_owned();
-            let next = self.reconstruction(&part);
+            let judged = match &mut self.weighting {
+                Some(weighting) => weighting.process(&part),
+                None => part.clone(),
+            };
+            self.recent
+                .push_back(&judged * judged.transpose() / judged.ncols() as f64);
+            while self.recent.len() > self.average {
+                self.recent.pop_front();
+            }
+            let covariance = self
+                .recent
+                .iter()
+                .fold(DMatrix::zeros(channels, channels), |sum, c| sum + c)
+                / self.recent.len() as f64;
+            let next = self.reconstruction(covariance);
             let before = self.previous.take().unwrap_or_else(|| next.clone());
             let length = part.ncols();
             for k in 0..length {
                 // Ease from the previous reconstruction into this one across the window.
-                let blend = 0.5 - 0.5 * (std::f64::consts::PI * (k + 1) as f64 / length as f64).cos();
+                let blend = 0.5 - 0.5 * (std::f64::consts::PI * (k as f64 + self.blend_offset) / length as f64).cos();
                 let sample = part.column(k);
                 out.set_column(from + k, &(&next * sample * blend + &before * sample * (1.0 - blend)));
             }

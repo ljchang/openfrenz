@@ -316,8 +316,8 @@ config.json: node z: was stored for 35 features and given 18
 |---|---|---|
 | `select` | signal → signal | `channels`: names to keep, in order |
 | `mix` | signal → signal | `channels`: list of `{"name": ..., "weights": {channel: weight}}`. Each new channel is a weighted sum, for example a difference between two electrodes |
-| `filter` | signal → signal | `steps`: filters as in [Filters](#filters); `start`: `zero` or `settled` (`zero`); `zero_phase`: filter each step both ways, without state (`false`) |
-| `asr` | signal → signal | `weights`: prefix of `mixing` and `threshold`; `max_removed` (0.66); `window_s` (0.5) |
+| `filter` | signal → signal | `steps`: filters as in [Filters](#filters); `start`: `zero`, `settled`, or a number (that value, held for ever) (`zero`); `zero_phase`: filter each step both ways, without state (`false`) |
+| `asr` | signal → signal | `weights`: prefix of `mixing` and `threshold`; `max_removed` (0.66); `window_s` (0.5); `weighting`: `{"b": [...], "a": [...]}`; `average_windows` (1); `blend_offset`: 1 or 0 (1); `before`: filters run inside the node; `before_start`; `passes` (1). See [Matching another cleaner](#matching-another-cleaner) |
 | `band_power` | signal → features | `bands`: list of `[low, high]`; `relative_to`: `[low, high]` to divide by; `log` (`false`); `segment`: average over stretches of that many samples; `measure`: `power` or `magnitude` (`power`); `integrate`: `sum` or `simpson` (`sum`); `window`: `hann` or `none` (`hann`); `remove_mean` (`true`). See [Shares, ratios and averages](#shares-ratios-and-averages) |
 | `wavelet` | signal → features | `frequencies`: list of Hz; `cycles` (6); `trim_s`: seconds left out at each end (0); `log` (`false`). Gives the mean amplitude over the step |
 | `envelope` | signal → features | `band`: `[low, high]`; `order` (2); `stats` (`["mean", "sd"]`) |
@@ -391,6 +391,23 @@ high-pass filter would lose. `jumps` counts the jumps added during the step, eac
 it happened.
 
 Neither block detects anything for the first `warmup_s`, while it learns the ordinary size.
+
+### Matching another cleaner
+
+The `asr` block's options let a pipeline reproduce artifact subspace reconstruction as other software runs
+it, sample for sample:
+
+- **`weighting`** filters the data before its size is judged (the cleaned data itself is not filtered), as
+  EEGLAB does with its spectral weighting. Give the filter's coefficients, `b` over `a`; it starts settled on
+  the first sample.
+- **`average_windows`** judges each window by the average covariance of it and the windows before it.
+- **`blend_offset`** sets where the ease from one window's reconstruction into the next starts: 1 (EEGLAB) or 0.
+- **`before`** runs a filter chain inside the node, before the reconstruction, starting as `before_start`
+  says. On its own it is the same as a `filter` node in front.
+- **`passes`** runs that chain and the reconstruction several times over each step and keeps the first result,
+  so both see each step that many times. Some pipelines were trained this way, and their models need it to
+  give the same numbers.
+- **`max_removed`** of 0.75 with four channels always keeps one direction.
 
 ### Shares, ratios and averages
 

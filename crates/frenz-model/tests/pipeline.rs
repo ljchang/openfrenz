@@ -801,3 +801,81 @@ fn phase_and_amplitude_of_two_bands_are_measured() {
         "a steady climb and a swing are unrelated: {correlation}"
     );
 }
+
+#[test]
+fn a_filter_can_start_as_if_a_value_had_been_held_for_ever() {
+    // A low-pass filter started at 5 gives 5 straight away for a steady 5; started at zero it climbs to it.
+    let design = Design::lowpass(2, 10.0, 125.0).unwrap();
+    let steady = vec![vec![5.0; 50]];
+    let held = dsp::Filter::new(design.clone(), dsp::Start::Value(5.0)).process(&steady);
+    assert!(held[0].iter().all(|v| (v - 5.0).abs() < 1e-9), "{:?}", &held[0][..5]);
+    let zero = dsp::Filter::new(design, dsp::Start::Zero).process(&steady);
+    assert!(zero[0][0] < 1.0);
+}
+
+#[test]
+fn the_artifact_cleaner_options_change_what_they_say_and_nothing_else() {
+    let mixing = vec![
+        2.0, 0.1, 0.0, 0.1, 0.1, 3.0, 0.2, 0.0, 0.0, 0.2, 2.5, 0.1, 0.1, 0.0, 0.1, 4.0,
+    ];
+    let threshold = vec![
+        5.0, 0.0, 0.0, 0.0, 0.0, 5.0, 0.0, 0.0, 0.0, 0.0, 5.0, 0.0, 0.0, 0.0, 0.0, 5.0,
+    ];
+    let arrays = [("c.mixing", vec![4, 4], mixing), ("c.threshold", vec![4, 4], threshold)];
+    let run = |extra: Value| -> Vec<Vec<f64>> {
+        let mut node =
+            json!({ "name": "clean", "op": "asr", "in": "eeg", "weights": "c", "window_s": 1.0, "max_removed": 0.75 });
+        for (key, value) in extra.as_object().unwrap() {
+            node[key] = value.clone();
+        }
+        let config = json!({
+            "openfrenz_model": "pipeline", "name": "a", "version": "1",
+            "step": { "stream": "eeg", "samples": 250 },
+            "nodes": [node, { "name": "s", "op": "summary", "in": "clean", "stats": ["mean", "sd"] }],
+            "outputs": ["s"]
+        });
+        let mut model = Pipeline::from_dir(model_dir(&config, &arrays).path()).unwrap();
+        (0..4).map(|k| model.step(&step(k)).unwrap().unwrap()).collect()
+    };
+    let same = |a: &[Vec<f64>], b: &[Vec<f64>]| {
+        a.iter()
+            .flatten()
+            .zip(b.iter().flatten())
+            .all(|(x, y)| (x - y).abs() <= 1e-9 * x.abs().max(1.0))
+    };
+    let plain = run(json!({}));
+    // A weighting filter that passes everything, and averaging over one window, change nothing.
+    assert!(same(
+        &plain,
+        &run(json!({ "weighting": { "b": [1, 0], "a": [1, 0] }, "average_windows": 1 }))
+    ));
+    // A filter before the cleaner is the same as a filter node in front of it.
+    let before = run(json!({ "before": [{ "type": "dc_block", "pole": 0.99 }], "before_start": 1.0 }));
+    assert!(!same(&plain, &before));
+    // A second pass changes the state the next step sees, but not the first step's result.
+    let twice = run(json!({ "before": [{ "type": "dc_block", "pole": 0.99 }], "before_start": 1.0, "passes": 2 }));
+    assert!(same(&before[..1], &twice[..1]));
+    assert!(!same(&before[1..], &twice[1..]));
+    for (bad, words) in [
+        (json!({ "blend_offset": 0.5 }), "blend_offset"),
+        (json!({ "weighting": { "b": [1, 0] } }), "weighting needs b and a"),
+        (json!({ "passes": 9 }), "passes"),
+        (
+            json!({ "before": [{ "type": "dc_block" }], "before_start": "warm" }),
+            "before_start",
+        ),
+        (json!({ "before_start": 1.0 }), "give before too"),
+    ] {
+        let mut node = json!({ "name": "clean", "op": "asr", "in": "eeg", "weights": "c" });
+        for (key, value) in bad.as_object().unwrap() {
+            node[key] = value.clone();
+        }
+        let config = json!({ "openfrenz_model": "pipeline", "name": "a", "version": "1",
+            "step": { "stream": "eeg", "samples": 250 },
+            "nodes": [node, { "name": "s", "op": "summary", "in": "clean" }], "outputs": ["s"] });
+        match Pipeline::from_dir(model_dir(&config, &arrays).path()) {
+            Err(Error::Files(message)) => assert!(message.contains(words), "{message}"),
+            _ => panic!("{bad} was accepted"),
+        }
+    }
+}

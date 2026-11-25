@@ -259,7 +259,7 @@ impl Design {
 }
 
 /// What a filter assumes came before its first sample.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum Start {
     /// Silence. The output begins with the filter's response to the signal switching on.
     #[default]
@@ -267,6 +267,8 @@ pub enum Start {
     /// The first sample, held for ever. Avoids the switch-on transient of a signal with an
     /// offset.
     Settled,
+    /// This value, held for ever.
+    Value(f64),
 }
 
 /// A filter running over one or more channels, keeping its state between calls.
@@ -309,6 +311,7 @@ impl Filter {
                     *state = match self.start {
                         Start::Zero => vec![[0.0; 2]; self.design.sections.len()],
                         Start::Settled => self.design.settled().iter().map(|s| s.map(|v| v * first)).collect(),
+                        Start::Value(level) => self.design.settled().iter().map(|s| s.map(|v| v * level)).collect(),
                     };
                 }
                 channel
