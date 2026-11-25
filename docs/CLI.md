@@ -80,7 +80,7 @@ recordings/FRENZA12-1800000000.sqlite: 60.1 s
   …
 ```
 
-## `frenz export <FILE>… [-o DIR]`
+## `frenz export <FILE>… [-o DIR] [--model NAME]…`
 
 Converts recordings into session folders for analysis (default output `sessions/`), one folder per
 recording:
@@ -97,6 +97,12 @@ sessions/FRENZA12-1800000000/
 ├── battery.parquet  contact.parquet  status.parquet
 └── markers.parquet  t, label (session markers and every command sent)
 ```
+
+`--model NAME` also runs a model over each recording and writes what it gives as
+`<model name>.parquet`, with `t` and one column per output. `NAME` is a model that comes with
+openfrenz (`eog`, `brow-emg`, `heart`, `head`), a folder, or a Hugging Face repository; repeat the option for
+several. `session.json` records which version of each model made its table. See
+[Models that come with openfrenz](MODELS.md#models-that-come-with-openfrenz).
 
 Things to know about the tables:
 

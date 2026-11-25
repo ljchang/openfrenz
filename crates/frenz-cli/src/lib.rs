@@ -66,6 +66,11 @@ enum Cmd {
         /// Output folder; each input becomes <out>/<input name>/.
         #[arg(short, long, default_value = "sessions")]
         out: PathBuf,
+        /// Also run a model over each recording and write what it gives as a table: a model
+        /// that comes with openfrenz (eog, brow-emg, heart, head), a folder, or a Hugging Face repository
+        /// (owner/name). Repeat for several.
+        #[arg(short, long = "model")]
+        models: Vec<String>,
     },
 }
 
@@ -135,9 +140,9 @@ async fn dispatch(cli: Cli) -> Result<()> {
             frenz::synth::write_recording(&output, seconds)?;
             println!("wrote {} ({seconds} s synthetic recording)", output.display());
         }
-        Cmd::Export { inputs, out } => {
+        Cmd::Export { inputs, out, models } => {
             for input in inputs {
-                export(&input, &out).with_context(|| format!("exporting {}", input.display()))?;
+                export(&input, &out, &models).with_context(|| format!("exporting {}", input.display()))?;
             }
         }
     }
@@ -255,14 +260,28 @@ fn summary(file: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-fn export(input: &std::path::Path, out: &std::path::Path) -> Result<()> {
+fn export(input: &std::path::Path, out: &std::path::Path, models: &[String]) -> Result<()> {
     let session = frenz_export::read(input)?;
     let name = input
         .file_stem()
         .map_or_else(|| "session".into(), |s| s.to_string_lossy().to_string());
     let dir = out.join(name);
     session.write(&dir)?;
+    let modelled = frenz_model::export_models(&session, &dir, models)?;
     println!("{} -> {}", input.display(), dir.display());
+    for made in &modelled {
+        let missed: Vec<String> = made
+            .missed
+            .iter()
+            .map(|(stream, n)| format!("{n} without {stream}"))
+            .collect();
+        let skipped = if missed.is_empty() {
+            String::new()
+        } else {
+            format!(" (steps skipped: {})", missed.join(", "))
+        };
+        println!("  {:>12}: {} steps from the model{skipped}", made.table, made.rows);
+    }
     for (stream, table) in &session.tables {
         let info = session.meta.get("streams").and_then(|s| s.get(*stream));
         let rates: Vec<String> = info

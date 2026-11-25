@@ -315,16 +315,20 @@ config.json: node z: was stored for 35 features and given 18
 | Block | Reads → gives | Settings (defaults) |
 |---|---|---|
 | `select` | signal → signal | `channels`: names to keep, in order |
+| `mix` | signal → signal | `channels`: list of `{"name": ..., "weights": {channel: weight}}`. Each new channel is a weighted sum, for example a difference between two electrodes |
 | `filter` | signal → signal | `steps`: filters as in [Filters](#filters); `start`: `zero` or `settled` (`zero`); `zero_phase`: filter each step both ways, without state (`false`) |
 | `asr` | signal → signal | `weights`: prefix of `mixing` and `threshold`; `max_removed` (0.66); `window_s` (0.5) |
 | `band_power` | signal → features | `bands`: list of `[low, high]`; `relative_to`: `[low, high]` to divide by; `log` (`false`); `segment`: average over stretches of that many samples |
 | `wavelet` | signal → features | `frequencies`: list of Hz; `cycles` (6); `trim_s`: seconds left out at each end (0); `log` (`false`). Gives the mean amplitude over the step |
 | `envelope` | signal → features | `band`: `[low, high]`; `order` (2); `stats` (`["mean", "sd"]`) |
-| `summary` | signal → features | `stats`: any of `mean`, `sd`, `range`, `largest_step` (`["mean", "sd"]`) |
+| `summary` | signal → features | `stats`: any of `mean`, `sd`, `log_sd`, `range`, `largest_step` (`["mean", "sd"]`) |
 | `quality` | signal → features | `limit`: the largest value the sensor reports. Gives the shares of repeated, clipped and invalid samples |
 | `coherence` | signal → features | `pairs`: list of `[channel, channel]`; `bands`; `segment` (125); `average_steps` (1) |
 | `coupling` | signal → features | `phase_band`, `amplitude_band`; `order` (2); `bins` (18); `trim_s` (0); `average_steps` (1) |
 | `heart` | signal → features | `channel` (the first); `invert` (`false`); `window_steps` (1). Gives rate, SDNN, RMSSD and quality |
+| `peaks` | signal → features | `threshold` (4); `back_s` (2); `ahead_s` (0.25); `min_gap_s` (0.25); `scale_half_life_s` (120); `warmup_s` (5). Gives `peaks`, `peak_time` and `peak_size`; see [Moments](#moments-peaks-and-jumps) |
+| `jumps` | signal → features | `threshold` (6); `leak_s` (5); `min_gap_s` (0.12); `near_s` (0.048); `far_s` (0.152); `scale_half_life_s` (120); `warmup_s` (5). Gives `position` and `jumps` |
+| `tilt` | signal → features | `counts_per_g` (16384). Reads the accelerometer's `x`, `y`, `z`; gives `pitch_deg`, `roll_deg`, `from_upright_deg` and `g`; see [Head posture and movement](#head-posture-and-movement) |
 | `concat` | features, ... → features | |
 | `normalize` | features → features | `weights`: prefix of stored `center` and `scale`; or `half_life_steps` and `warmup_steps` (2) to track them as steps pass |
 | `history` | features → sequence | `steps`: how many to keep |
@@ -332,8 +336,8 @@ config.json: node z: was stored for 35 features and given 18
 
 Things to know:
 
-- **State.** `filter`, `asr`, `coherence`, `coupling`, `heart`, `history` and a running
-  `normalize` carry state from step to step, and all of it is cleared at a reset.
+- **State.** `filter`, `asr`, `coherence`, `coupling`, `heart`, `peaks`, `jumps`, `history` and a
+  running `normalize` carry state from step to step, and all of it is cleared at a reset.
 - **Warm-up.** A block that needs several steps (`average_steps`, `window_steps`, `steps`,
   `warmup_steps`) gives nothing until it has them, and neither does anything that reads it. The
   model's first output comes when every block is ready.
@@ -347,6 +351,43 @@ Things to know:
   `tanh`, `sigmoid` and `gelu`. Arrays are laid out as PyTorch stores them: `prefix.weight` and
   `prefix.bias` for `dense`; `prefix.weight_ih_l0`, `prefix.weight_hh_l0`, `prefix.bias_ih_l0` and
   `prefix.bias_hh_l0` for `lstm`. The network must end in a single row.
+
+### Moments: peaks and jumps
+
+Two blocks find things that happen at a moment instead of describing a whole step. Both work
+sample by sample, so the result does not depend on how long the steps are.
+
+**`peaks`** finds peaks that stand out from their surroundings: local maxima whose height above
+the higher of the two lowest points nearby (within `back_s` before and `ahead_s` after) is at
+least `threshold` times the signal's ordinary size. The ordinary size is a running median of the
+signal's absolute value, so the peaks themselves do not raise it; it follows slow changes over
+about `scale_half_life_s`. Of peaks closer together than `min_gap_s`, only the highest counts.
+Each step gives, per channel:
+
+| Feature | Meaning |
+|---|---|
+| `peaks` | how many peaks became certain during this step |
+| `peak_time` | when the largest of them was, in seconds counted back from the step's last sample (zero or negative; not-a-number if none) |
+| `peak_size` | how far it stood out, in units of the ordinary size (not-a-number if none) |
+
+A peak is reported `ahead_s` to `ahead_s + min_gap_s` after it happened, so it often belongs to
+an earlier step than the one that reports it. Its time is the step's `t` plus `peak_time`:
+
+```python
+out = model.run("recordings/session.sqlite")
+found = out[out["blink:peaks"] > 0]
+blink_times = found["t"] + found["blink:peak_time"]
+```
+
+**`jumps`** follows a level that moves in abrupt steps while the sensor's baseline wanders. A
+change between two samples counts as a jump when it is `threshold` times the ordinary change; its
+height is the mean level from `near_s` to `far_s` after it minus the same before it. Heights are
+added to a `position` that fades back to zero, losing half of itself every `leak_s`. Slow wander
+never reaches the position, and a level that changes and stays changed is still seen, which a
+high-pass filter would lose. `jumps` counts the jumps added during the step, each `far_s` after
+it happened.
+
+Neither block detects anything for the first `warmup_s`, while it learns the ordinary size.
 
 ### Write a pipeline from Python
 
@@ -389,6 +430,144 @@ use the token in `HF_TOKEN`, or the one saved by the Hugging Face command-line l
 settings only and are never executed, and the sizes a `config.json` can ask for are bounded
 (samples per step, filter order, steps kept, and so on), so a model from an unknown source can
 be slow or wrong but cannot run code. Model files over 512 MB are not downloaded.
+
+## Models that come with openfrenz
+
+Four pipelines are built in and are loaded by name. None needs stored numbers.
+`openfrenz.MODELS` lists them.
+
+| Name | Reads | Gives, per step |
+|---|---|---|
+| `eog` | `eeg` | eye signals: blinks and horizontal gaze, every 0.2 s |
+| `brow-emg` | `eeg` | muscle activity of the forehead, every 0.2 s |
+| `heart` | `ppg` | heart rate, its variability and a quality score over the last 30 s, every 5 s |
+| `head` | `accel`, `gyro` | how the head is held and how much it moves and turns, every second |
+
+**Live**, as the band streams:
+
+```python
+model = openfrenz.Pipeline("eog")
+with openfrenz.connect("FRENZA12") as band:
+    for out in model.stream(band):
+        if out["blink:peaks"]:
+            print("blink at", out["t"] + out["blink:peak_time"])
+```
+
+**In an exported session**, as one more table beside the streams:
+
+```python
+session = openfrenz.export("recordings/session.sqlite", models=["eog", "brow-emg", "heart"])
+session["eog"]                              # DataFrame: t and one column per output
+```
+
+```sh
+frenz export recordings/session.sqlite --model eog --model brow-emg --model heart
+```
+
+`models` and `--model` also take a folder or a Hugging Face repository, so your own pipelines
+are exported the same way. The recording itself is never changed: it stays the raw record, and a
+session can be exported again whenever a model improves.
+
+### Which model made a table
+
+These models will change as more data is collected. Each model table in `session.json` records
+where its numbers came from:
+
+```python
+session.meta["tables"]["eog"]["model"]
+# {'name': 'eog', 'version': '0.1', 'source': 'eog',
+#  'fingerprint': '<16 hex digits>', 'runner': 'openfrenz frenz-model 0.3.0',
+#  'outputs': [...], 'missed': {'eeg': 1}}
+```
+
+- `version` is what the model's `config.json` calls itself.
+- `fingerprint` is computed from the model's files and changes whenever they do, even if nobody
+  remembered to change the version.
+- `runner` is the openfrenz version that ran it; `session.meta["exporter"]` is the one that
+  exported the streams.
+
+To find sessions made with an older model, compare with the model in hand:
+
+```python
+current = openfrenz.Pipeline("eog").fingerprint
+stale = [p for p in openfrenz.find_sessions("sessions")
+         if openfrenz.load_session(p).meta["tables"].get("eog", {}).get("model", {}).get("fingerprint") != current]
+```
+
+### Eye and brow signals
+
+The eyes and the forehead muscles are read from the same electrodes in different frequency
+ranges. They are two models, so that each can change on its own. Both give a row every 0.2 s.
+
+| Model | Output | From | Meaning |
+|---|---|---|---|
+| `eog` | `blink:peaks`, `blink:peak_time`, `blink:peak_size` | forehead pads minus side combs, 0.5-8 Hz, `peaks` | blinks and longer eye closures |
+| `eog` | `gaze_horizontal:position`, `gaze_horizontal:jumps` | left minus right forehead pad, below 8 Hz, `jumps` | where the eyes point, left to right, in device counts; fades to zero within seconds |
+| `brow-emg` | `brow:log_sd` | left minus right forehead pad, 20-58 Hz, `summary` | how hard the forehead muscles are working (natural logarithm) |
+
+**These outputs are experimental.** They were checked against face video analysed with
+[py-feat](https://py-feat.org), on two ten-minute sessions of one person on consecutive days:
+
+| Output | Check | Day 1 | Day 2 |
+|---|---|---|---|
+| Blinks | F1 against blinks seen on video, within 0.2 s | 0.50 | 0.76 |
+| Horizontal gaze | correlation with gaze on video, during cued looks left and right | 0.89 | 0.69 |
+| Brow | correlation with brow raise on video, whole session | 0.59 | 0.56 |
+
+Blink times were within 15 ms of the video on both days. What to keep in mind:
+
+- **Gaze is readable only while the face is still.** Over a whole session, including posed
+  expressions, its correlation with video is near zero: one large movement of the forehead adds
+  a jump far bigger than any eye movement. It gives direction and relative size, not degrees.
+- **Vertical gaze is not given.** The band's electrodes do not separate it.
+- **Brow level is relative.** Compare it with a stretch of rest from the same session, or follow
+  it with a running `normalize`.
+- **Blink precision varies from day to day** with the noise on the side combs.
+- One person and two days cannot show how these hold across people, hair or fit.
+
+### Heart rate and its variability
+
+`heart` runs the [`heart` block](#heartbeats-from-the-pulse-sensor) on one pulse channel (`tag3`)
+over the last 30 s and gives `heart:rate_bpm`, `heart:sdnn_ms`, `heart:rmssd_ms` and
+`heart:quality` every 5 s.
+
+**Also experimental, and not checked against an ECG.** On the same two sessions `quality` was
+above 0.8 for 96% and 69% of steps, with a median rate of 72 and 71 beats a minute; the band's
+own heart-rate stream, which reported a value in only 2% and 10% of its readings, averaged 78
+and 73. Keep only steps with `quality` above about 0.8. The other pulse channel (`tag2`) was
+unusable in both sessions. Thirty seconds is short for variability, and 25 Hz limits how finely
+each beat is timed; see the block's notes.
+
+### Head posture and movement
+
+`head` reads the motion sensors and gives, every second:
+
+| Output | Meaning |
+|---|---|
+| `tilt:pitch_deg` | how far the head leans forward (positive, chin down) or back, from the direction of gravity |
+| `tilt:roll_deg` | how far it leans toward the wearer's left shoulder (positive) or right |
+| `tilt:from_upright_deg` | angle between the top of the head and straight up: near 0 upright, near 90 lying down |
+| `tilt:g` | size of the accelerometer reading in g: 1 when still |
+| `accel_down:sd`, `accel_left:sd`, `accel_forward:sd` | how much the head was jolted along each axis during the second (above 0.5 Hz, in counts) |
+| `turn_shake:sd`, `turn_nod:sd`, `turn_side:sd` | how much it turned about the vertical axis (a shake), the ear-to-ear axis (a nod) and the nose axis (ear toward shoulder), in gyroscope counts |
+
+What these can and cannot say:
+
+- **Upright or lying down, and on which side.** Lying on the back gives a pitch near -90, face
+  down near +90, on the right side a roll near -90, on the left near +90.
+- **Sitting and standing look the same**: the head is upright in both. Telling them apart needs
+  more than how the head is held, for example the moment of standing up.
+- **The band sits at an angle on the forehead**, and not the same angle every time: sitting
+  upright read 12 and 23 degrees from upright on two days. Compare with a known upright stretch
+  from the same session before reading small leans.
+- **Nods and shakes are not counted yet.** The turn outputs say how much the head turned about
+  each axis, which is what published detectors of nods and shakes build on, but no recording
+  with cued nods and shakes has been made to set and check a detector. The sensor's y and z axes
+  are also rotated about 30 degrees from the band's, so nods and sideways tilts are not cleanly
+  separated; shakes, about the vertical axis, are.
+
+The angles follow from the sensor's axes and gravity and are tested on made-up readings. They
+have not been compared with a measured head angle.
 
 ## Models in code
 

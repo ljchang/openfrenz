@@ -24,9 +24,9 @@
 //! A stream without a steady rate is listed with `"arrived": true` and delivers whatever came
 //! during the step.
 //! Blocks that need stored numbers (`asr`, `normalize`, `network`) name them in `model.safetensors`
-//! with `weights`. The blocks: `select`, `filter`, `asr`, `band_power`, `wavelet`, `envelope`,
-//! `summary`, `quality`, `coherence`, `coupling`, `heart`, `concat`, `normalize`, `history`,
-//! `network`. A pipeline
+//! with `weights`. The blocks: `select`, `mix`, `filter`, `asr`, `band_power`, `wavelet`, `envelope`,
+//! `summary`, `quality`, `coherence`, `coupling`, `heart`, `peaks`, `jumps`, `tilt`, `concat`,
+//! `normalize`, `history`, `network`. A pipeline
 //! is checked when it is loaded by running it on silence, so a mismatch between blocks is
 //! reported then, with the node's name.
 

@@ -7,8 +7,8 @@ use serde_json::Value as Json;
 
 use super::nn::{Network, Weights};
 use crate::dsp::{
-    Asr, AsrCalibration, CouplingSums, CrossSpectrum, Design, Filter, Recent, Start, analytic, cross_spectrum,
-    filtfilt, heart, morlet, periodogram, quality, summary, welch,
+    Asr, AsrCalibration, CouplingSums, CrossSpectrum, Design, Filter, JumpSettings, Jumps, PeakSettings, Peaks, Recent,
+    Start, analytic, cross_spectrum, filtfilt, heart, morlet, periodogram, quality, summary, welch,
 };
 
 /// Samples of one stream or of something made from one.
@@ -232,6 +232,8 @@ fn stat(x: &[f64], name: &str) -> Result<f64, String> {
     Ok(match name {
         "mean" => s.mean,
         "sd" => s.sd,
+        // Sizes that span orders of magnitude, such as muscle activity, are steadier as logarithms.
+        "log_sd" => s.sd.max(f64::MIN_POSITIVE).ln(),
         "range" => s.range,
         "largest_step" => s.largest_step,
         other => return Err(format!("unknown statistic {other:?}")),
@@ -636,6 +638,259 @@ impl Op for NetworkOp {
     }
 }
 
+/// A channel made by `mix`: its name and the weight it gives to each channel it reads.
+type Mixed = (String, Vec<(String, f64)>);
+
+/// `mix`: new channels, each a weighted sum of the signal's channels.
+struct Mix {
+    channels: Vec<Mixed>,
+}
+
+impl Op for Mix {
+    fn reset(&mut self) {}
+    fn run(&mut self, inputs: &[&Value]) -> Result<Option<Value>, String> {
+        let signal = one_signal(inputs)?;
+        let samples = signal.data.first().map_or(0, Vec::len);
+        let mut data = Vec::with_capacity(self.channels.len());
+        for (_, weights) in &self.channels {
+            let mut mixed = vec![0.0; samples];
+            for (name, weight) in weights {
+                for (m, x) in mixed.iter_mut().zip(&signal.data[channel_index(signal, name)?]) {
+                    *m += weight * x;
+                }
+            }
+            data.push(mixed);
+        }
+        Ok(Some(Value::Signal(Signal {
+            rate_hz: signal.rate_hz,
+            channels: self.channels.iter().map(|(name, _)| name.clone()).collect(),
+            data,
+        })))
+    }
+}
+
+/// Settings of `peaks` and `jumps` given in seconds, turned into samples once the rate is known.
+#[derive(Clone, Copy)]
+struct Seconds {
+    threshold: f64,
+    back: f64,
+    ahead: f64,
+    min_gap: f64,
+    near: f64,
+    far: f64,
+    leak: f64,
+    scale_half_life: f64,
+    warmup: f64,
+}
+
+/// At least one sample, however short the time.
+fn in_samples(seconds: f64, rate_hz: f64) -> usize {
+    (seconds * rate_hz).round().max(1.0) as usize
+}
+
+/// `peaks`: peaks of each channel that stand out from their surroundings.
+struct PeaksOp {
+    seconds: Seconds,
+    built: Option<(f64, Vec<Peaks>)>,
+}
+
+impl Op for PeaksOp {
+    fn reset(&mut self) {
+        if let Some((_, detectors)) = &mut self.built {
+            detectors.iter_mut().for_each(Peaks::reset);
+        }
+    }
+    fn run(&mut self, inputs: &[&Value]) -> Result<Option<Value>, String> {
+        let signal = one_signal(inputs)?;
+        let rate = signal.rate_hz;
+        if self
+            .built
+            .as_ref()
+            .is_none_or(|(built, detectors)| *built != rate || detectors.len() != signal.data.len())
+        {
+            let s = self.seconds;
+            let settings = PeakSettings {
+                threshold: s.threshold,
+                back: in_samples(s.back, rate),
+                ahead: in_samples(s.ahead, rate),
+                min_gap: in_samples(s.min_gap, rate),
+                scale_half_life: s.scale_half_life * rate,
+                warmup: in_samples(s.warmup, rate),
+            };
+            self.built = Some((rate, signal.data.iter().map(|_| Peaks::new(settings)).collect()));
+        }
+        let Some((_, detectors)) = &mut self.built else {
+            return Ok(None);
+        };
+        let (mut names, mut values) = (Vec::new(), Vec::new());
+        for ((channel, x), detector) in signal.channels.iter().zip(&signal.data).zip(detectors) {
+            let (mut count, mut largest) = (0.0, None::<crate::dsp::Peak>);
+            for v in x {
+                if let Some(peak) = detector.push(*v) {
+                    count += 1.0;
+                    if largest.is_none_or(|l| peak.size > l.size) {
+                        largest = Some(peak);
+                    }
+                }
+            }
+            // When the largest peak was, counted back from the step's last sample.
+            let last = detector.seen().saturating_sub(1);
+            let when = largest.map_or(f64::NAN, |p| -((last - p.index.min(last)) as f64) / rate);
+            for (name, value) in [
+                ("peaks", count),
+                ("peak_time", when),
+                ("peak_size", largest.map_or(f64::NAN, |p| p.size)),
+            ] {
+                names.push(format!("{channel}:{name}"));
+                values.push(value);
+            }
+        }
+        Ok(Some(Value::Features { names, values }))
+    }
+}
+
+/// `jumps`: where each channel stands after its abrupt changes of level, fading back to zero.
+struct JumpsOp {
+    seconds: Seconds,
+    built: Option<(f64, Vec<Jumps>)>,
+}
+
+impl Op for JumpsOp {
+    fn reset(&mut self) {
+        if let Some((_, followers)) = &mut self.built {
+            followers.iter_mut().for_each(Jumps::reset);
+        }
+    }
+    fn run(&mut self, inputs: &[&Value]) -> Result<Option<Value>, String> {
+        let signal = one_signal(inputs)?;
+        let rate = signal.rate_hz;
+        if self
+            .built
+            .as_ref()
+            .is_none_or(|(built, followers)| *built != rate || followers.len() != signal.data.len())
+        {
+            let s = self.seconds;
+            let settings = JumpSettings {
+                threshold: s.threshold,
+                min_gap: in_samples(s.min_gap, rate),
+                near: in_samples(s.near, rate),
+                far: in_samples(s.far, rate),
+                leak_half_life: s.leak * rate,
+                scale_half_life: s.scale_half_life * rate,
+                warmup: in_samples(s.warmup, rate),
+            };
+            self.built = Some((rate, signal.data.iter().map(|_| Jumps::new(settings)).collect()));
+        }
+        let Some((_, followers)) = &mut self.built else {
+            return Ok(None);
+        };
+        let (mut names, mut values) = (Vec::new(), Vec::new());
+        for ((channel, x), follower) in signal.channels.iter().zip(&signal.data).zip(followers) {
+            let count = x.iter().filter(|v| follower.push(**v)).count();
+            names.push(format!("{channel}:position"));
+            values.push(follower.position());
+            names.push(format!("{channel}:jumps"));
+            values.push(count as f64);
+        }
+        Ok(Some(Value::Features { names, values }))
+    }
+}
+
+/// `tilt`: how the head is held, from the direction of gravity in an accelerometer's `x`, `y`
+/// and `z` (the band's axes: x down toward the chin, y toward the wearer's left, z forward).
+struct Tilt {
+    counts_per_g: f64,
+}
+
+impl Op for Tilt {
+    fn reset(&mut self) {}
+    fn run(&mut self, inputs: &[&Value]) -> Result<Option<Value>, String> {
+        let signal = one_signal(inputs)?;
+        let mean = |name: &str| -> Result<f64, String> {
+            let x = &signal.data[channel_index(signal, name)?];
+            Ok(if x.is_empty() {
+                f64::NAN
+            } else {
+                x.iter().sum::<f64>() / x.len() as f64
+            })
+        };
+        // At rest the sensor reads the push that holds it up, so its reading points up.
+        let (x, y, z) = (mean("x")?, mean("y")?, mean("z")?);
+        let size = (x * x + y * y + z * z).sqrt();
+        // How far each of the head's axes leans from level, and how far its top is from straight up.
+        let lean = |part: f64| (part / size).clamp(-1.0, 1.0);
+        let values = vec![
+            lean(-z).asin().to_degrees(),
+            lean(-y).asin().to_degrees(),
+            lean(-x).acos().to_degrees(),
+            size / self.counts_per_g,
+        ];
+        let names = ["pitch_deg", "roll_deg", "from_upright_deg", "g"];
+        Ok(Some(Value::Features {
+            names: names.iter().map(|n| format!("tilt:{n}")).collect(),
+            values,
+        }))
+    }
+}
+
+/// A positive setting, or its default.
+fn positive(config: &Json, key: &str, default: f64, most: f64) -> Result<f64, String> {
+    match config.get(key) {
+        None => Ok(default),
+        Some(v) => v
+            .as_f64()
+            .filter(|x| *x > 0.0 && *x <= most)
+            .ok_or_else(|| format!("{key} must be a positive number, at most {most}")),
+    }
+}
+
+/// The channels of a `mix`: `[{"name": ..., "weights": {channel: weight, ...}}, ...]`.
+fn mixes(config: &Json) -> Result<Vec<Mixed>, String> {
+    let wrong = || "needs channels: a list of {\"name\": ..., \"weights\": {channel: weight}}".to_owned();
+    let listed = config.get("channels").and_then(Json::as_array).ok_or_else(wrong)?;
+    if listed.is_empty() || listed.len() > MAX_COUNT {
+        return Err(wrong());
+    }
+    let mut channels: Vec<Mixed> = Vec::new();
+    for entry in listed {
+        let name = entry.get("name").and_then(Json::as_str).ok_or_else(wrong)?;
+        let weights = entry.get("weights").and_then(Json::as_object).ok_or_else(wrong)?;
+        if channels.iter().any(|(n, _)| n == name) {
+            return Err(format!("the channel name {name:?} is used twice"));
+        }
+        let weights = weights
+            .iter()
+            .map(|(channel, weight)| {
+                weight
+                    .as_f64()
+                    .filter(|w| w.is_finite())
+                    .map(|w| (channel.clone(), w))
+                    .ok_or_else(|| format!("the weight of {channel:?} in {name:?} is not a number"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if weights.is_empty() {
+            return Err(format!("{name:?} has no weights"));
+        }
+        channels.push((name.to_owned(), weights));
+    }
+    Ok(channels)
+}
+
+/// The settings `peaks` and `jumps` share, with the defaults of each.
+fn seconds(config: &Json, threshold: f64, min_gap: f64) -> Result<Seconds, String> {
+    Ok(Seconds {
+        threshold: positive(config, "threshold", threshold, 1e6)?,
+        back: positive(config, "back_s", 2.0, 60.0)?,
+        ahead: positive(config, "ahead_s", 0.25, 60.0)?,
+        min_gap: positive(config, "min_gap_s", min_gap, 60.0)?,
+        near: positive(config, "near_s", 0.048, 10.0)?,
+        far: positive(config, "far_s", 0.152, 10.0)?,
+        leak: positive(config, "leak_s", 5.0, 3600.0)?,
+        scale_half_life: positive(config, "scale_half_life_s", 120.0, 86400.0)?,
+        warmup: positive(config, "warmup_s", 5.0, 600.0)?,
+    })
+}
+
 /// The block called `op`, with the settings in `config` and numbers from `weights`.
 pub(crate) fn build(op: &str, config: &Json, weights: &Weights) -> Result<Box<dyn Op>, String> {
     Ok(match op {
@@ -752,6 +1007,23 @@ pub(crate) fn build(op: &str, config: &Json, weights: &Weights) -> Result<Box<dy
                 .map_err(|e| e.to_string())?,
             })
         }
+        "mix" => Box::new(Mix {
+            channels: mixes(config)?,
+        }),
+        "peaks" => Box::new(PeaksOp {
+            seconds: seconds(config, 4.0, 0.25)?,
+            built: None,
+        }),
+        "jumps" => {
+            let seconds = seconds(config, 6.0, 0.12)?;
+            if seconds.near >= seconds.far {
+                return Err("near_s must be less than far_s".into());
+            }
+            Box::new(JumpsOp { seconds, built: None })
+        }
+        "tilt" => Box::new(Tilt {
+            counts_per_g: positive(config, "counts_per_g", 16384.0, 1e9)?,
+        }),
         "concat" => Box::new(Concat),
         "normalize" => match config.get("weights").and_then(Json::as_str) {
             Some(prefix) => Box::new(Normalize::Stored {

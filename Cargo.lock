@@ -659,6 +659,7 @@ dependencies = [
  "clap",
  "frenz",
  "frenz-export",
+ "frenz-model",
  "frenz-proto",
  "rusqlite",
  "serde_json",
