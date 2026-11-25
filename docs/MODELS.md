@@ -510,11 +510,14 @@ ranges. They are two models, so that each can change on its own. Both give a row
 
 | Output | Check | Day 1 | Day 2 |
 |---|---|---|---|
-| Blinks | F1 against blinks seen on video, within 0.2 s | 0.50 | 0.76 |
+| Blinks | F1 against blinks seen on video, within 0.2 s | 0.49 | 0.70 |
 | Horizontal gaze | correlation with gaze on video, during cued looks left and right | 0.89 | 0.69 |
 | Brow | correlation with brow raise on video, whole session | 0.59 | 0.56 |
 
-Blink times were within 15 ms of the video on both days. What to keep in mind:
+Blink times were within 15 ms of the video on both days. Version 0.2 of `eog` lowered the blink threshold
+from 4 to 3: on a third day, when the side combs were about 45 times noisier than the forehead pads, version
+0.1 found 9 of 15 cued natural blinks and 0.2 finds all 15. The cost is more false detections on quieter days
+(F1 0.50 to 0.49 and 0.76 to 0.70 on the two video days). What to keep in mind:
 
 - **Gaze is readable only while the face is still.** Over a whole session, including posed
   expressions, its correlation with video is near zero: one large movement of the forehead adds
@@ -522,7 +525,8 @@ Blink times were within 15 ms of the video on both days. What to keep in mind:
 - **Vertical gaze is not given.** The band's electrodes do not separate it.
 - **Brow level is relative.** Compare it with a stretch of rest from the same session, or follow
   it with a running `normalize`.
-- **Blink precision varies from day to day** with the noise on the side combs.
+- **Blink detection depends on the side combs.** The blink signal is the forehead pads minus the combs, and how
+  noisy the combs are varies with fit from day to day.
 - One person and two days cannot show how these hold across people, hair or fit.
 
 ### Heart rate and its variability
