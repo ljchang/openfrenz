@@ -600,6 +600,19 @@ fn the_models_that_come_with_openfrenz_load_by_name() {
                 "turn_side:sd"
             ]
         );
+        let power = outputs("eeg-power");
+        assert_eq!(power.len(), 25);
+        assert_eq!(power[0], "forehead_right:power:1-4");
+        assert_eq!(
+            power[20..],
+            [
+                "mean:power:1-4",
+                "mean:power:4-8",
+                "mean:power:8-13",
+                "mean:power:13-30",
+                "mean:power:30-45"
+            ]
+        );
         assert!(frenz_model::resolve("no-such-model").is_err());
     }
     // The same files always have the same fingerprint; any change gives another.

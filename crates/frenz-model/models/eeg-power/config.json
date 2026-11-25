@@ -1,0 +1,14 @@
+{
+  "openfrenz_model": "pipeline",
+  "name": "eeg-power",
+  "version": "0.1",
+  "step": { "stream": "eeg", "samples": 125 },
+  "nodes": [
+    { "name": "clean", "op": "filter", "in": "eeg", "start": "settled",
+      "steps": [{ "type": "notch", "hz": 60 }, { "type": "bandpass", "low": 1, "high": 45 }] },
+    { "name": "power", "op": "band_power", "in": "clean", "log": true,
+      "bands": [[1, 4], [4, 8], [8, 13], [13, 30], [30, 45]] },
+    { "name": "mean", "op": "average", "in": "power" }
+  ],
+  "outputs": ["power", "mean"]
+}

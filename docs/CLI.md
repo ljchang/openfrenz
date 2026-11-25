@@ -100,7 +100,7 @@ sessions/FRENZA12-1800000000/
 
 `--model NAME` also runs a model over each recording and writes what it gives as
 `<model name>.parquet`, with `t` and one column per output. `NAME` is a model that comes with
-openfrenz (`eog`, `brow-emg`, `heart`, `head`), a folder, or a Hugging Face repository; repeat the option for
+openfrenz (`eog`, `brow-emg`, `heart`, `head`, `eeg-power`), a folder, or a Hugging Face repository; repeat the option for
 several. `session.json` records which version of each model made its table. See
 [Models that come with openfrenz](MODELS.md#models-that-come-with-openfrenz).
 

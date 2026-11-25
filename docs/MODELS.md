@@ -483,7 +483,7 @@ be slow or wrong but cannot run code. Model files over 512 MB are not downloaded
 
 ## Models that come with openfrenz
 
-Four pipelines are built in and are loaded by name. None needs stored numbers.
+Five pipelines are built in and are loaded by name. None needs stored numbers.
 `openfrenz.MODELS` lists them.
 
 | Name | Reads | Gives, per step |
@@ -492,6 +492,7 @@ Four pipelines are built in and are loaded by name. None needs stored numbers.
 | `brow-emg` | `eeg` | muscle activity of the forehead, every 0.2 s |
 | `heart` | `ppg` | heart rate, its variability and a quality score over the last 30 s, every 5 s |
 | `head` | `accel`, `gyro` | how the head is held and how much it moves and turns, every second |
+| `eeg-power` | `eeg` | power in the delta, theta, alpha, beta and gamma bands of each electrode and their average, every second |
 
 **Live**, as the band streams:
 
@@ -578,6 +579,16 @@ from 4 to 3: on a third day, when the side combs were about 45 times noisier tha
 - **Blink detection depends on the side combs.** The blink signal is the forehead pads minus the combs, and how
   noisy the combs are varies with fit from day to day.
 - One person and two days cannot show how these hold across people, hair or fit.
+
+### EEG power bands
+
+`eeg-power` filters each electrode (60 Hz notch, 1-45 Hz band-pass) and gives, every second, the natural
+logarithm of its power in 1-4 (delta), 4-8 (theta), 8-13 (alpha), 13-30 (beta) and 30-45 Hz (gamma), named
+like `forehead_left:power:8-13`, plus each band averaged over the four electrodes (`mean:power:8-13`).
+
+On this band most of what is above about 20 Hz is muscle, not brain (see the eye and brow findings), so
+read beta and especially gamma as facial tension unless the face is still. Power is in squared device counts:
+compare it within a session, not between bands or people.
 
 ### Heart rate and its variability
 
