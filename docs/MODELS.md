@@ -331,7 +331,7 @@ config.json: node z: was stored for 35 features and given 18
 | `jumps` | signal → features | `threshold` (6); `leak_s` (5); `min_gap_s` (0.12); `near_s` (0.048); `far_s` (0.152); `scale_half_life_s` (120); `warmup_s` (5). Gives `position` and `jumps` |
 | `tilt` | signal → features | `counts_per_g` (16384). Reads the accelerometer's `x`, `y`, `z`; gives `pitch_deg`, `roll_deg`, `from_upright_deg` and `g`; see [Head posture and movement](#head-posture-and-movement) |
 | `ratios` | features → features | `pairs`: list of `[measure, measure]`; `log` (`false`) |
-| `average` | features → features | `channels`: which to average (all); `name` (`mean`) |
+| `average` | features → features | `channels`: which to average (all); `prefix` of the averaged features (`mean`) |
 | `concat` | features, ... → features | |
 | `normalize` | features → features | `weights`: prefix of stored `center` and `scale`; or `half_life_steps` and `warmup_steps` (2) to track them as steps pass |
 | `history` | features → sequence | `steps`: how many to keep |
@@ -422,7 +422,7 @@ Three blocks turn per-channel spectra into the kind of numbers a model is usuall
   `forehead_left:magnitude:8-12` into `forehead_left:magnitude:4-8/magnitude:8-12`, and the same for each other
   channel. Any two measures can be paired, from any blocks, as long as both reach the `ratios` node.
 - **`average`** averages each measure over channels: `forehead_left:x` and `forehead_right:x` become
-  `mean:x`. Averaging after `ratios` gives the mean of the ratios; averaging the signals first would not.
+  `mean:x` (`prefix` sets another word than `mean`). Averaging after `ratios` gives the mean of the ratios; averaging the signals first would not.
 
 ```json
 { "name": "band", "op": "filter", "in": "front", "zero_phase": true,

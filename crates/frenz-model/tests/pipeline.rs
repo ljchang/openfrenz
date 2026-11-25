@@ -696,9 +696,9 @@ fn shares_ratios_and_averages_follow_the_tones_put_in() {
               "measure": "magnitude", "integrate": "simpson", "window": "none", "remove_mean": false },
             { "name": "ratio", "op": "ratios", "in": "shares", "pairs": [["magnitude:4-8", "magnitude:8-12"]] },
             { "name": "both", "op": "concat", "in": ["shares", "ratio"] },
-            { "name": "mean", "op": "average", "in": "both", "channels": ["forehead_left", "forehead_right"] }
+            { "name": "avg", "op": "average", "in": "both", "channels": ["forehead_left", "forehead_right"] }
         ],
-        "outputs": ["both", "mean"]
+        "outputs": ["both", "avg"]
     });
     let mut model = Pipeline::from_dir(model_dir(&config, &[]).path()).unwrap();
     assert_eq!(
@@ -756,6 +756,12 @@ fn shares_ratios_and_averages_follow_the_tones_put_in() {
     );
     assert!(broken(|c| c["nodes"][1]["segment"] = json!(125)).contains("segment is for power"));
     assert!(broken(|c| c["nodes"][1]["integrate"] = json!("trapezoid")).contains("integrate must be one of"));
+    assert!(broken(|c| c["nodes"][4]["prefix"] = json!("a:b")).contains("prefix"));
+    // The prefix is a setting of its own, not the node's name.
+    let mut named = config.clone();
+    named["nodes"][4]["prefix"] = json!("both_pads");
+    let model = Pipeline::from_dir(model_dir(&named, &[]).path()).unwrap();
+    assert_eq!(model.spec().outputs[6], "both_pads:magnitude:4-8");
 }
 
 #[test]
