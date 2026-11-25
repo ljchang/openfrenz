@@ -187,28 +187,43 @@ impl Op for FilterOp {
     }
 }
 
-/// `band_power`: power in each band of each channel.
+/// `band_power`: power (or magnitude) in each band of each channel.
 struct BandPower {
     bands: Vec<(f64, f64)>,
     relative_to: Option<(f64, f64)>,
     log: bool,
     segment: Option<usize>,
+    /// The size of each frequency as magnitude instead of power.
+    magnitude: bool,
+    /// Integrate bands with Simpson's rule over the bins nearest their edges, instead of summing bins.
+    simpson: bool,
+    hann: bool,
+    remove_mean: bool,
 }
 
 impl Op for BandPower {
     fn reset(&mut self) {}
     fn run(&mut self, inputs: &[&Value]) -> Result<Option<Value>, String> {
         let signal = one_signal(inputs)?;
+        let what = if self.magnitude { "magnitude" } else { "power" };
         let (mut names, mut values) = (Vec::new(), Vec::new());
         for (channel, x) in signal.channels.iter().zip(&signal.data) {
-            let spectrum = match self.segment {
-                Some(segment) => welch(x, signal.rate_hz, segment),
-                None => periodogram(x, signal.rate_hz),
+            let spectrum = match (self.magnitude, self.segment) {
+                (true, _) => crate::dsp::magnitude(x, signal.rate_hz, self.hann, self.remove_mean),
+                (false, Some(segment)) => welch(x, signal.rate_hz, segment),
+                (false, None) => periodogram(x, signal.rate_hz),
             };
-            let total = self.relative_to.map(|(low, high)| spectrum.band_power(low, high));
+            let integrate = |(low, high): (f64, f64)| {
+                if self.simpson {
+                    spectrum.band_simpson(low, high)
+                } else {
+                    spectrum.band_power(low, high)
+                }
+            };
+            let total = self.relative_to.map(integrate);
             for b in &self.bands {
-                let power = spectrum.band_power(b.0, b.1) / total.unwrap_or(1.0);
-                names.push(format!("{channel}:power:{}", label(*b)));
+                let power = integrate(*b) / total.unwrap_or(1.0);
+                names.push(format!("{channel}:{what}:{}", label(*b)));
                 values.push(if self.log { power.ln() } else { power });
             }
         }
@@ -833,6 +848,179 @@ impl Op for Tilt {
     }
 }
 
+/// `ratios`: one measure over another, for every channel that has both. A pair `[a, b]` matches each feature
+/// named `<prefix>:a` with `<prefix>:b` (or `a` with `b` exactly) and gives `<prefix>:a/b`.
+struct Ratios {
+    pairs: Vec<(String, String)>,
+    log: bool,
+}
+
+impl Op for Ratios {
+    fn reset(&mut self) {}
+    fn run(&mut self, inputs: &[&Value]) -> Result<Option<Value>, String> {
+        let [Value::Features { names, values }] = inputs else {
+            return Err("takes one set of features".into());
+        };
+        let (mut out_names, mut out_values) = (Vec::new(), Vec::new());
+        for (a, b) in &self.pairs {
+            let mut found = false;
+            for (name, top) in names.iter().zip(values) {
+                let prefix = if name == a {
+                    ""
+                } else if let Some(prefix) = name.strip_suffix(a.as_str()).and_then(|p| p.strip_suffix(':')) {
+                    prefix
+                } else {
+                    continue;
+                };
+                let partner = if prefix.is_empty() {
+                    b.clone()
+                } else {
+                    format!("{prefix}:{b}")
+                };
+                let Some(k) = names.iter().position(|n| *n == partner) else {
+                    continue;
+                };
+                found = true;
+                let ratio = top / values[k];
+                out_names.push(if prefix.is_empty() {
+                    format!("{a}/{b}")
+                } else {
+                    format!("{prefix}:{a}/{b}")
+                });
+                out_values.push(if self.log { ratio.ln() } else { ratio });
+            }
+            if !found {
+                return Err(format!("no features named {a:?} with a matching {b:?}"));
+            }
+        }
+        Ok(Some(Value::Features {
+            names: out_names,
+            values: out_values,
+        }))
+    }
+}
+
+/// `average`: each measure averaged over channels. Features named `<channel>:<measure>` from the listed
+/// channels (all channels if none are listed) become `<name>:<measure>`.
+struct Average {
+    channels: Vec<String>,
+    name: String,
+}
+
+impl Op for Average {
+    fn reset(&mut self) {}
+    fn run(&mut self, inputs: &[&Value]) -> Result<Option<Value>, String> {
+        let [Value::Features { names, values }] = inputs else {
+            return Err("takes one set of features".into());
+        };
+        // Measures in the order they first appear, with their sum and count.
+        let mut measures: Vec<(String, f64, usize)> = Vec::new();
+        let mut seen: Vec<&str> = Vec::new();
+        for (full, value) in names.iter().zip(values) {
+            let Some((channel, measure)) = full.split_once(':') else {
+                continue;
+            };
+            if !self.channels.is_empty() && !self.channels.iter().any(|c| c == channel) {
+                continue;
+            }
+            if !seen.contains(&channel) {
+                seen.push(channel);
+            }
+            match measures.iter_mut().find(|(m, _, _)| m == measure) {
+                Some((_, sum, count)) => {
+                    *sum += value;
+                    *count += 1;
+                }
+                None => measures.push((measure.to_owned(), *value, 1)),
+            }
+        }
+        if let Some(missing) = self.channels.iter().find(|c| !seen.contains(&c.as_str())) {
+            return Err(format!("no features for channel {missing:?}"));
+        }
+        if measures.is_empty() {
+            return Err("no features named <channel>:<measure>".into());
+        }
+        Ok(Some(Value::Features {
+            names: measures.iter().map(|(m, _, _)| format!("{}:{m}", self.name)).collect(),
+            values: measures.iter().map(|(_, sum, count)| sum / *count as f64).collect(),
+        }))
+    }
+}
+
+/// `phase_amplitude`: the phase of one band and the amplitude envelope of another in each channel, over the step:
+/// the envelope's mean and spread, the unwrapped phase's mean and spread, and how closely the two move together.
+struct PhaseAmplitude {
+    phase_band: (f64, f64),
+    amplitude_band: (f64, f64),
+    order: usize,
+    trim_s: f64,
+    stats: Vec<String>,
+}
+
+/// Phase with the jumps of 2π taken out, as NumPy's `unwrap`.
+fn unwrap(wrapped: &[f64]) -> Vec<f64> {
+    use std::f64::consts::PI;
+    let mut out = Vec::with_capacity(wrapped.len());
+    let mut shift = 0.0;
+    let mut previous = None;
+    for &w in wrapped {
+        if let Some(p) = previous {
+            let d: f64 = w - p;
+            let mut m = (d + PI).rem_euclid(2.0 * PI) - PI;
+            if m == -PI && d > 0.0 {
+                m = PI;
+            }
+            if d.abs() >= PI {
+                shift += m - d;
+            }
+        }
+        out.push(w + shift);
+        previous = Some(w);
+    }
+    out
+}
+
+const PHASE_AMPLITUDE_STATS: [&str; 5] = [
+    "amplitude_mean",
+    "amplitude_sd",
+    "phase_mean",
+    "phase_sd",
+    "correlation",
+];
+
+impl Op for PhaseAmplitude {
+    fn reset(&mut self) {}
+    fn run(&mut self, inputs: &[&Value]) -> Result<Option<Value>, String> {
+        let signal = one_signal(inputs)?;
+        let slow = Design::bandpass(self.order, self.phase_band.0, self.phase_band.1, signal.rate_hz)
+            .map_err(|e| e.to_string())?;
+        let fast = Design::bandpass(self.order, self.amplitude_band.0, self.amplitude_band.1, signal.rate_hz)
+            .map_err(|e| e.to_string())?;
+        let what = format!("{}/{}", label(self.phase_band), label(self.amplitude_band));
+        let (mut names, mut values) = (Vec::new(), Vec::new());
+        for (channel, x) in signal.channels.iter().zip(&signal.data) {
+            let phase = unwrap(&analytic(&filtfilt(&slow, x)).phase);
+            let amplitude = analytic(&filtfilt(&fast, x)).amplitude;
+            let trim = ((self.trim_s * signal.rate_hz).round() as usize).min(x.len() / 2);
+            let (p, a) = (&phase[trim..x.len() - trim], &amplitude[trim..x.len() - trim]);
+            let (sp, sa) = (summary(p), summary(a));
+            let n = p.len().max(1) as f64;
+            let covariance = p.iter().zip(a).map(|(u, v)| (u - sp.mean) * (v - sa.mean)).sum::<f64>() / n;
+            for stat in &self.stats {
+                names.push(format!("{channel}:phase_amplitude:{what}:{stat}"));
+                values.push(match stat.as_str() {
+                    "amplitude_mean" => sa.mean,
+                    "amplitude_sd" => sa.sd,
+                    "phase_mean" => sp.mean,
+                    "phase_sd" => sp.sd,
+                    _ => covariance / (sp.sd * sa.sd),
+                });
+            }
+        }
+        Ok(Some(Value::Features { names, values }))
+    }
+}
+
 /// A positive setting, or its default.
 fn positive(config: &Json, key: &str, default: f64, most: f64) -> Result<f64, String> {
     match config.get(key) {
@@ -911,12 +1099,76 @@ pub(crate) fn build(op: &str, config: &Json, weights: &Weights) -> Result<Box<dy
             zero_phase: flag(config, "zero_phase"),
             built: None,
         }),
-        "band_power" => Box::new(BandPower {
-            bands: bands(config, "bands")?,
-            relative_to: config.get("relative_to").map(band).transpose()?,
-            log: flag(config, "log"),
-            segment: config.get("segment").map(|_| count(config, "segment", 0)).transpose()?,
+        "band_power" => {
+            let choice = |key: &str, default: &str, allowed: &[&str]| -> Result<String, String> {
+                let value = config.get(key).and_then(Json::as_str).unwrap_or(default);
+                if allowed.contains(&value) {
+                    Ok(value.to_owned())
+                } else {
+                    Err(format!("{key} must be one of {allowed:?}, not {value:?}"))
+                }
+            };
+            let magnitude = choice("measure", "power", &["power", "magnitude"])? == "magnitude";
+            let segment = config.get("segment").map(|_| count(config, "segment", 0)).transpose()?;
+            if magnitude && segment.is_some() {
+                return Err("segment is for power; magnitude uses the whole step".into());
+            }
+            Box::new(BandPower {
+                bands: bands(config, "bands")?,
+                relative_to: config.get("relative_to").map(band).transpose()?,
+                log: flag(config, "log"),
+                segment,
+                magnitude,
+                simpson: choice("integrate", "sum", &["sum", "simpson"])? == "simpson",
+                hann: choice("window", "hann", &["hann", "none"])? == "hann",
+                remove_mean: config.get("remove_mean").and_then(Json::as_bool).unwrap_or(true),
+            })
+        }
+        "ratios" => {
+            let pairs: Vec<(String, String)> = config
+                .get("pairs")
+                .and_then(Json::as_array)
+                .ok_or("needs pairs: a list of [measure, measure]")?
+                .iter()
+                .map(|pair| match pair.as_array().map(Vec::as_slice) {
+                    Some([a, b]) => match (a.as_str(), b.as_str()) {
+                        (Some(a), Some(b)) if !a.is_empty() && !b.is_empty() => Ok((a.to_owned(), b.to_owned())),
+                        _ => Err(format!("{pair} is not a pair of measure names")),
+                    },
+                    _ => Err(format!("{pair} is not a pair of measure names")),
+                })
+                .collect::<Result<_, _>>()?;
+            if pairs.is_empty() || pairs.len() > MAX_COUNT {
+                return Err("needs pairs: a list of [measure, measure]".into());
+            }
+            Box::new(Ratios {
+                pairs,
+                log: flag(config, "log"),
+            })
+        }
+        "average" => Box::new(Average {
+            channels: strings(config, "channels", &[])?,
+            name: config.get("name").and_then(Json::as_str).unwrap_or("mean").to_owned(),
         }),
+        "phase_amplitude" => {
+            let stats = strings(config, "stats", &PHASE_AMPLITUDE_STATS)?;
+            if let Some(unknown) = stats.iter().find(|s| !PHASE_AMPLITUDE_STATS.contains(&s.as_str())) {
+                return Err(format!(
+                    "unknown statistic {unknown:?}; known: {PHASE_AMPLITUDE_STATS:?}"
+                ));
+            }
+            Box::new(PhaseAmplitude {
+                phase_band: band(config.get("phase_band").ok_or("needs phase_band: [low, high]")?)?,
+                amplitude_band: band(
+                    config
+                        .get("amplitude_band")
+                        .ok_or("needs amplitude_band: [low, high]")?,
+                )?,
+                order: count(config, "order", 2)?,
+                trim_s: duration(config, "trim_s")?,
+                stats,
+            })
+        }
         "envelope" => Box::new(Envelope {
             band: band(config.get("band").ok_or("needs band: [low, high]")?)?,
             order: count(config, "order", 2)?,

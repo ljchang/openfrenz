@@ -23,6 +23,6 @@ pub use events::{JumpSettings, Jumps, Peak, PeakSettings, Peaks, RunningScale};
 pub use filter::{Design, Filter, Section, Start, filtfilt};
 pub use heart::{Heart, heart};
 pub use relate::{Coupling, CouplingSums, CrossSpectrum, Recent, correlation, coupling, cross_spectrum};
-pub use spectrum::{Spectrum, periodogram, welch};
+pub use spectrum::{Spectrum, magnitude, periodogram, welch};
 pub use stats::{Quality, Summary, quality, summary};
 pub use wavelet::{morlet, scalogram};

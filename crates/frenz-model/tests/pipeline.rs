@@ -657,3 +657,147 @@ fn tilt_reads_how_the_head_is_held_from_gravity() {
     near(&held(0.0, 1.0, 0.0), [0.0, -90.0, 90.0, 1.0], "lying on the right side");
     near(&held(-2.0, 0.0, 0.0), [0.0, 0.0, 0.0, 2.0], "pushed upward");
 }
+
+/// Two steps of 2 s at 125 Hz: whole cycles of each frequency, so each lands in one frequency bin.
+fn tones(parts: &[(f64, f64)], channel_gain: [f64; 4]) -> Vec<Vec<f64>> {
+    (0..4)
+        .map(|c| {
+            (0..250)
+                .map(|n| {
+                    let t = n as f64 / 125.0;
+                    channel_gain[c] * parts.iter().map(|(hz, a)| a * (2.0 * PI * hz * t).sin()).sum::<f64>()
+                })
+                .collect()
+        })
+        .collect()
+}
+
+#[test]
+fn shares_ratios_and_averages_follow_the_tones_put_in() {
+    let config = json!({
+        "openfrenz_model": "pipeline", "name": "shares", "version": "1",
+        "step": { "stream": "eeg", "samples": 250 },
+        "nodes": [
+            { "name": "front", "op": "select", "in": "eeg", "channels": ["forehead_left", "forehead_right"] },
+            { "name": "shares", "op": "band_power", "in": "front", "bands": [[4, 8], [8, 12]], "relative_to": [0, 62],
+              "measure": "magnitude", "integrate": "simpson", "window": "none", "remove_mean": false },
+            { "name": "ratio", "op": "ratios", "in": "shares", "pairs": [["magnitude:4-8", "magnitude:8-12"]] },
+            { "name": "both", "op": "concat", "in": ["shares", "ratio"] },
+            { "name": "mean", "op": "average", "in": "both", "channels": ["forehead_left", "forehead_right"] }
+        ],
+        "outputs": ["both", "mean"]
+    });
+    let mut model = Pipeline::from_dir(model_dir(&config, &[]).path()).unwrap();
+    assert_eq!(
+        model.spec().outputs,
+        [
+            "forehead_left:magnitude:4-8",
+            "forehead_left:magnitude:8-12",
+            "forehead_right:magnitude:4-8",
+            "forehead_right:magnitude:8-12",
+            "forehead_left:magnitude:4-8/magnitude:8-12",
+            "forehead_right:magnitude:4-8/magnitude:8-12",
+            "mean:magnitude:4-8",
+            "mean:magnitude:8-12",
+            "mean:magnitude:4-8/magnitude:8-12"
+        ]
+    );
+    // 6 Hz at size 1 and 10 Hz at size 2: a third and two thirds of the magnitude, whatever the channel's gain.
+    let out = model
+        .step(&eeg_step(tones(&[(6.0, 1.0), (10.0, 2.0)], [1.0, 1.0, 3.0, 1.0])))
+        .unwrap()
+        .unwrap();
+    let want = [
+        1.0 / 3.0,
+        2.0 / 3.0,
+        1.0 / 3.0,
+        2.0 / 3.0,
+        0.5,
+        0.5,
+        1.0 / 3.0,
+        2.0 / 3.0,
+        0.5,
+    ];
+    for (k, (got, want)) in out.iter().zip(want).enumerate() {
+        assert!(
+            (got - want).abs() < 1e-9,
+            "{}: {got} != {want}",
+            model.spec().outputs[k]
+        );
+    }
+
+    let broken = |change: fn(&mut Value)| {
+        let mut wrong = config.clone();
+        change(&mut wrong);
+        match Pipeline::from_dir(model_dir(&wrong, &[]).path()) {
+            Err(Error::Files(message)) => message,
+            _ => panic!("a broken config was accepted"),
+        }
+    };
+    assert!(
+        broken(|c| c["nodes"][2]["pairs"] = json!([["magnitude:4-8", "power:8-12"]])).contains("no features named")
+    );
+    assert!(
+        broken(|c| c["nodes"][4]["channels"] = json!(["forehead_left", "nose"]))
+            .contains("no features for channel \"nose\"")
+    );
+    assert!(broken(|c| c["nodes"][1]["segment"] = json!(125)).contains("segment is for power"));
+    assert!(broken(|c| c["nodes"][1]["integrate"] = json!("trapezoid")).contains("integrate must be one of"));
+}
+
+#[test]
+fn phase_and_amplitude_of_two_bands_are_measured() {
+    let config = json!({
+        "openfrenz_model": "pipeline", "name": "pa", "version": "1",
+        "step": { "stream": "eeg", "samples": 250 },
+        "nodes": [
+            { "name": "one", "op": "select", "in": "eeg", "channels": ["forehead_left"] },
+            { "name": "pa", "op": "phase_amplitude", "in": "one", "phase_band": [2, 4], "amplitude_band": [20, 30],
+              "trim_s": 0.4 }
+        ],
+        "outputs": ["pa"]
+    });
+    let mut model = Pipeline::from_dir(model_dir(&config, &[]).path()).unwrap();
+    let names: Vec<String> = [
+        "amplitude_mean",
+        "amplitude_sd",
+        "phase_mean",
+        "phase_sd",
+        "correlation",
+    ]
+    .iter()
+    .map(|s| format!("forehead_left:phase_amplitude:2-4/20-30:{s}"))
+    .collect();
+    assert_eq!(model.spec().outputs, names);
+    // A 3 Hz rhythm, and a 25 Hz one whose size swings between 0.5 and 1.5 three times a second.
+    let eeg: Vec<Vec<f64>> = (0..4)
+        .map(|_| {
+            (0..250)
+                .map(|n| {
+                    let t = n as f64 / 125.0;
+                    0.3 * (2.0 * PI * 3.0 * t).sin()
+                        + (1.0 + 0.5 * (2.0 * PI * 3.0 * t).cos()) * (2.0 * PI * 25.0 * t).sin()
+                })
+                .collect()
+        })
+        .collect();
+    let out = model.step(&eeg_step(eeg)).unwrap().unwrap();
+    let [amplitude_mean, amplitude_sd, _, phase_sd, correlation] = out[..] else {
+        panic!()
+    };
+    assert!((amplitude_mean - 1.0).abs() < 0.05, "amplitude mean {amplitude_mean}");
+    assert!(
+        (amplitude_sd - 0.5 / 2f64.sqrt()).abs() < 0.05,
+        "amplitude sd {amplitude_sd}"
+    );
+    // Unwrapped, the 3 Hz phase climbs 6π a second; over the 1.2 s kept its spread is that ramp's.
+    let ramp = 6.0 * PI * 1.2 / 12f64.sqrt();
+    assert!(
+        (phase_sd - ramp).abs() / ramp < 0.03,
+        "phase sd {phase_sd}, ramp {ramp}"
+    );
+    assert!(
+        correlation.abs() < 0.2,
+        "a steady climb and a swing are unrelated: {correlation}"
+    );
+}
