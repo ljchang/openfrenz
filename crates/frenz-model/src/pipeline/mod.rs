@@ -110,6 +110,15 @@ impl Pipeline {
         Self::build(&config, &weights)
     }
 
+    /// Builds the pipeline that `config` describes (what a `config.json` holds), checked as
+    /// [`Pipeline::from_dir`] checks it. For pipelines made in a program, such as an editor: blocks
+    /// that need stored numbers (`asr` and `normalize` with `weights`, `network`) are refused, since
+    /// there is no `model.safetensors`. Unknown keys are ignored, so a config can carry an editor's
+    /// own notes, such as where each node is drawn.
+    pub fn from_config(config: &Json) -> Result<Self, Error> {
+        Self::build(config, &Weights::default())
+    }
+
     fn build(config: &Json, weights: &Weights) -> Result<Self, Error> {
         let text = |key: &str| config.get(key).and_then(Json::as_str).unwrap_or_default().to_owned();
         let samples = |entry: &Json, what: &str| {
