@@ -1,7 +1,7 @@
 {
   "openfrenz_model": "pipeline",
   "name": "eog",
-  "version": "0.1",
+  "version": "0.2",
   "step": { "stream": "eeg", "samples": 25 },
   "nodes": [
     { "name": "pairs", "op": "mix", "in": "eeg", "channels": [
@@ -13,7 +13,7 @@
     { "name": "blink_band", "op": "filter", "in": "blink_channel", "start": "settled",
       "steps": [{ "type": "bandpass", "low": 0.5, "high": 8 }] },
     { "name": "blinks", "op": "peaks", "in": "blink_band",
-      "threshold": 4, "back_s": 2, "ahead_s": 0.25, "min_gap_s": 0.25, "scale_half_life_s": 120 },
+      "threshold": 3, "back_s": 2, "ahead_s": 0.25, "min_gap_s": 0.25, "scale_half_life_s": 120 },
 
     { "name": "gaze_channel", "op": "select", "in": "pairs", "channels": ["gaze_horizontal"] },
     { "name": "gaze_slow", "op": "filter", "in": "gaze_channel", "start": "settled",
