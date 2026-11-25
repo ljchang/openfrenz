@@ -1182,7 +1182,12 @@ pub(crate) fn build(op: &str, config: &Json, weights: &Weights) -> Result<Box<dy
         }
         "average" => Box::new(Average {
             channels: strings(config, "channels", &[])?,
-            name: config.get("name").and_then(Json::as_str).unwrap_or("mean").to_owned(),
+            // Not `name`, which every node already uses for itself.
+            name: match config.get("prefix") {
+                None => "mean".to_owned(),
+                Some(Json::String(prefix)) if !prefix.is_empty() && !prefix.contains(':') => prefix.clone(),
+                Some(other) => return Err(format!("prefix must be a name without ':', not {other}")),
+            },
         }),
         "phase_amplitude" => {
             let stats = strings(config, "stats", &PHASE_AMPLITUDE_STATS)?;
