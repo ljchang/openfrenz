@@ -28,6 +28,9 @@
   Simpson's rule and leave out the window; new blocks `ratios` (any measure over any other, channel by
   channel), `average` (a measure over channels) and `phase_amplitude` (one band's phase against another's
   envelope).
+- **Matching another cleaner.** `asr` takes a weighting filter, covariance averaged over windows, where its
+  crossfade starts, a filter chain run inside it and repeated passes; `filter` can start as if a value had
+  been held for ever. Enough to reproduce a trained model's cleaning sample for sample.
 - **Models that come with openfrenz**, loaded by name: `eog` (blinks and horizontal gaze) and
   `brow-emg` (forehead muscle activity), both from the EEG stream, `heart` (heart rate and its variability from the
   pulse sensor) and `head` (how the head is held and how much it moves and turns, from the motion

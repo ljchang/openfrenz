@@ -475,26 +475,64 @@ impl Op for HeartOp {
     }
 }
 
-/// `asr`: artifact subspace reconstruction with a stored calibration.
+/// `asr`: artifact subspace reconstruction with a stored calibration, optionally after a filter chain of its own
+/// (`before`), the whole run `passes` times over each step with the first result kept.
 struct AsrOp {
     asr: Asr,
+    before: Option<FilterOp>,
+    passes: usize,
 }
 
 impl Op for AsrOp {
     fn reset(&mut self) {
         self.asr.reset();
+        if let Some(before) = &mut self.before {
+            before.reset();
+        }
     }
     fn run(&mut self, inputs: &[&Value]) -> Result<Option<Value>, String> {
         let signal = one_signal(inputs)?;
+        let mut first = None;
+        for _ in 0..self.passes {
+            let filtered = match &mut self.before {
+                Some(before) => match before.run(inputs)? {
+                    Some(Value::Signal(filtered)) => filtered.data,
+                    _ => return Err("the filter before the reconstruction gave nothing".into()),
+                },
+                None => signal.data.clone(),
+            };
+            let cleaned = self.asr.process(&filtered, signal.rate_hz).map_err(|e| e.to_string())?;
+            first.get_or_insert(cleaned);
+        }
         Ok(Some(Value::Signal(Signal {
             rate_hz: signal.rate_hz,
             channels: signal.channels.clone(),
-            data: self
-                .asr
-                .process(&signal.data, signal.rate_hz)
-                .map_err(|e| e.to_string())?,
+            data: first.unwrap_or_default(),
         })))
     }
+}
+
+/// A filter chain's `start`: `zero`, `settled`, or a number (that value, held for ever).
+fn start(config: &Json, key: &str) -> Result<Start, String> {
+    match config.get(key) {
+        None => Ok(Start::Zero),
+        Some(Json::String(s)) if s == "zero" => Ok(Start::Zero),
+        Some(Json::String(s)) if s == "settled" => Ok(Start::Settled),
+        Some(v) => v
+            .as_f64()
+            .filter(|x| x.is_finite())
+            .map(Start::Value)
+            .ok_or_else(|| format!("{key} must be zero, settled or a number, not {v}")),
+    }
+}
+
+fn numbers(value: &Json, what: &str) -> Result<Vec<f64>, String> {
+    value
+        .as_array()
+        .ok_or_else(|| format!("{what} must be a list of numbers"))?
+        .iter()
+        .map(|v| v.as_f64().ok_or_else(|| format!("{what} must be a list of numbers")))
+        .collect()
 }
 
 /// `concat`: several sets of features, one after another.
@@ -1091,11 +1129,7 @@ pub(crate) fn build(op: &str, config: &Json, weights: &Weights) -> Result<Box<dy
                 .and_then(Json::as_array)
                 .ok_or("needs steps: a list of filters")?
                 .clone(),
-            start: match config.get("start").and_then(Json::as_str).unwrap_or("zero") {
-                "zero" => Start::Zero,
-                "settled" => Start::Settled,
-                other => return Err(format!("start must be zero or settled, not {other:?}")),
-            },
+            start: start(config, "start")?,
             zero_phase: flag(config, "zero_phase"),
             built: None,
         }),
@@ -1250,14 +1284,40 @@ pub(crate) fn build(op: &str, config: &Json, weights: &Weights) -> Result<Box<dy
                 mixing: weights.matrix(&format!("{prefix}.mixing"))?,
                 threshold: weights.matrix(&format!("{prefix}.threshold"))?,
             };
-            Box::new(AsrOp {
-                asr: Asr::new(
-                    &calibration,
-                    number(config, "max_removed").unwrap_or(0.66),
-                    number(config, "window_s").unwrap_or(0.5),
-                )
-                .map_err(|e| e.to_string())?,
-            })
+            let mut asr = Asr::new(
+                &calibration,
+                number(config, "max_removed").unwrap_or(0.66),
+                number(config, "window_s").unwrap_or(0.5),
+            )
+            .map_err(|e| e.to_string())?
+            .with_average(count(config, "average_windows", 1)?);
+            if let Some(weighting) = config.get("weighting") {
+                let b = numbers(weighting.get("b").ok_or("weighting needs b and a")?, "weighting.b")?;
+                let a = numbers(weighting.get("a").ok_or("weighting needs b and a")?, "weighting.a")?;
+                asr = asr.with_weighting(&b, &a).map_err(|e| e.to_string())?;
+            }
+            match number(config, "blend_offset") {
+                None => {}
+                Some(offset) if offset == 0.0 || offset == 1.0 => asr = asr.with_blend_offset(offset),
+                Some(_) => return Err("blend_offset must be 0 or 1".into()),
+            }
+            let before = match config.get("before") {
+                None if config.get("before_start").is_some() => {
+                    return Err("before_start is the start of the before filters; give before too".into());
+                }
+                None => None,
+                Some(steps) => Some(FilterOp {
+                    steps: steps.as_array().ok_or("before must be a list of filters")?.clone(),
+                    start: start(config, "before_start")?,
+                    zero_phase: false,
+                    built: None,
+                }),
+            };
+            let passes = count(config, "passes", 1)?;
+            if passes > 8 {
+                return Err("passes must be at most 8".into());
+            }
+            Box::new(AsrOp { asr, before, passes })
         }
         "mix" => Box::new(Mix {
             channels: mixes(config)?,
