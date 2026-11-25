@@ -386,3 +386,274 @@ fn a_config_cannot_ask_for_unbounded_work() {
         {"name": "w", "op": "wavelet", "in": "eeg", "frequencies": [2, 6, 10, 20, 40], "cycles": 6}], "outputs": ["w"]});
     assert!(Pipeline::from_dir(model_dir(&config, &[]).path()).is_ok());
 }
+
+/// Noise that is the same every run: a fixed sequence between -1 and 1.
+fn noise(n: usize, seed: u64) -> Vec<f64> {
+    let mut state = seed;
+    (0..n)
+        .map(|_| {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((state >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
+        })
+        .collect()
+}
+
+/// Four channels of noise; a bump of `height` on both forehead pads, 0.2 s wide, centred on each
+/// of `bumps`; and the left forehead pad raised by `shift` from sample `turn` on.
+fn eye_signal(samples: usize, bumps: &[usize], height: f64, turn: usize, shift: f64) -> Vec<Vec<f64>> {
+    let mut eeg: Vec<Vec<f64>> = (0..4).map(|c| noise(samples, 7 + c)).collect();
+    let bump = |n: usize| -> f64 {
+        bumps
+            .iter()
+            .map(|at| height * (-((n as f64 - *at as f64) / 6.0).powi(2)).exp())
+            .sum()
+    };
+    // Channel order of the stream: forehead_right, comb_left, forehead_left, comb_right.
+    for (n, x) in eeg[0].iter_mut().enumerate() {
+        *x += bump(n);
+    }
+    for (n, x) in eeg[2].iter_mut().enumerate() {
+        *x += bump(n) + if n >= turn { shift } else { 0.0 };
+    }
+    eeg
+}
+
+fn eye_config(samples: usize) -> Value {
+    json!({
+        "openfrenz_model": "pipeline", "name": "eyes", "version": "1",
+        "step": { "stream": "eeg", "samples": samples },
+        "nodes": [
+            { "name": "pairs", "op": "mix", "in": "eeg", "channels": [
+                { "name": "blink", "weights": { "forehead_left": 0.5, "forehead_right": 0.5, "comb_left": -0.5, "comb_right": -0.5 } },
+                { "name": "gaze", "weights": { "forehead_left": 1, "forehead_right": -1 } } ] },
+            { "name": "b", "op": "select", "in": "pairs", "channels": ["blink"] },
+            { "name": "blinks", "op": "peaks", "in": "b", "threshold": 8, "back_s": 1, "warmup_s": 2 },
+            { "name": "g", "op": "select", "in": "pairs", "channels": ["gaze"] },
+            { "name": "turns", "op": "jumps", "in": "g", "threshold": 8, "leak_s": 4, "warmup_s": 2 }
+        ],
+        "outputs": ["blinks", "turns"]
+    })
+}
+
+/// Runs the eye pipeline over `eeg` in steps of `samples`; returns the sample number of every
+/// peak, and the position after each sample that ends a step.
+fn run_eyes(eeg: &[Vec<f64>], samples: usize) -> (Vec<i64>, Vec<(usize, f64)>, f64) {
+    let mut model = Pipeline::from_dir(model_dir(&eye_config(samples), &[]).path()).unwrap();
+    assert_eq!(
+        model.spec().outputs,
+        [
+            "blink:peaks",
+            "blink:peak_time",
+            "blink:peak_size",
+            "gaze:position",
+            "gaze:jumps"
+        ]
+    );
+    let (mut peaks, mut positions, mut jumps) = (Vec::new(), Vec::new(), 0.0);
+    for (k, start) in (0..eeg[0].len()).step_by(samples).enumerate() {
+        if start + samples > eeg[0].len() {
+            break;
+        }
+        let block = eeg.iter().map(|c| c[start..start + samples].to_vec()).collect();
+        let out = model.step(&eeg_step(block)).unwrap().unwrap();
+        let last = (k + 1) * samples - 1;
+        if out[0] > 0.0 {
+            assert_eq!(out[0], 1.0);
+            assert!(out[2] >= 8.0, "a peak below the threshold was reported: {}", out[2]);
+            peaks.push(last as i64 + (out[1] * 125.0).round() as i64);
+        } else {
+            assert!(out[1].is_nan() && out[2].is_nan());
+        }
+        positions.push((last, out[3]));
+        jumps += out[4];
+    }
+    (peaks, positions, jumps)
+}
+
+#[test]
+fn peaks_and_jumps_are_found_where_they_were_put() {
+    let bumps = [900, 1400, 2130, 2600];
+    let eeg = eye_signal(3000, &bumps, 40.0, 1800, 60.0);
+    let (peaks, positions, jumps) = run_eyes(&eeg, 25);
+    assert_eq!(peaks.len(), bumps.len(), "peaks at {peaks:?}");
+    for (found, put) in peaks.iter().zip(bumps) {
+        assert!(
+            (found - put as i64).abs() <= 3,
+            "a peak put at {put} was found at {found}"
+        );
+    }
+    // One turn of 60: nothing before it, all of it soon after, half of it gone 4 s later.
+    assert_eq!(jumps, 1.0);
+    let at = |sample: usize| positions.iter().find(|(last, _)| *last >= sample).unwrap().1;
+    assert_eq!(at(1790), 0.0);
+    assert!(
+        (at(1840) - 60.0).abs() < 3.0,
+        "position just after the turn: {}",
+        at(1840)
+    );
+    assert!((at(1800 + 500) - 30.0).abs() < 2.0, "position 4 s later: {}", at(2300));
+}
+
+#[test]
+fn peaks_and_jumps_do_not_depend_on_how_the_signal_is_cut_into_steps() {
+    let eeg = eye_signal(3000, &[700, 1010, 1600, 2400], 40.0, 1250, -45.0);
+    let (peaks, positions, jumps) = run_eyes(&eeg, 25);
+    for samples in [10, 125, 250] {
+        let (other_peaks, other_positions, other_jumps) = run_eyes(&eeg, samples);
+        assert_eq!(peaks, other_peaks, "steps of {samples}");
+        assert_eq!(jumps, other_jumps, "steps of {samples}");
+        for (last, position) in other_positions {
+            if let Some((_, same)) = positions.iter().find(|(l, _)| *l == last) {
+                assert!((position - same).abs() < 1e-9, "steps of {samples}, sample {last}");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_mix_is_a_weighted_sum_and_its_mistakes_are_reported() {
+    let config = json!({
+        "openfrenz_model": "pipeline", "name": "mix", "version": "1",
+        "step": { "stream": "eeg", "samples": 50 },
+        "nodes": [
+            { "name": "m", "op": "mix", "in": "eeg", "channels": [
+                { "name": "difference", "weights": { "forehead_left": 1, "forehead_right": -1 } },
+                { "name": "half", "weights": { "comb_left": 0.5 } } ] },
+            { "name": "level", "op": "summary", "in": "m", "stats": ["mean", "log_sd"] }
+        ],
+        "outputs": ["level"]
+    });
+    let mut model = Pipeline::from_dir(model_dir(&config, &[]).path()).unwrap();
+    assert_eq!(
+        model.spec().outputs,
+        ["difference:mean", "difference:log_sd", "half:mean", "half:log_sd"]
+    );
+    // forehead_right 1 +- 1, comb_left 4 +- 2, forehead_left 10 +- 1 moving against forehead_right.
+    let wave: Vec<f64> = (0..50).map(|n| if n % 2 == 0 { 1.0 } else { -1.0 }).collect();
+    let eeg = vec![
+        wave.iter().map(|w| 1.0 + w).collect(),
+        wave.iter().map(|w| 4.0 + 2.0 * w).collect(),
+        wave.iter().map(|w| 10.0 - w).collect(),
+        vec![0.0; 50],
+    ];
+    let out = model.step(&eeg_step(eeg)).unwrap().unwrap();
+    let want = [9.0, 2f64.ln(), 2.0, 0.0];
+    for (got, want) in out.iter().zip(want) {
+        assert!((got - want).abs() < 1e-12, "{out:?}");
+    }
+
+    let broken = |change: fn(&mut Value)| {
+        let mut config = eye_config(25);
+        change(&mut config);
+        match Pipeline::from_dir(model_dir(&config, &[]).path()) {
+            Err(Error::Files(message)) => message,
+            _ => panic!("a broken config was accepted"),
+        }
+    };
+    assert!(broken(|c| c["nodes"][0]["channels"][0]["weights"] = json!({ "nose": 1 })).contains("no channel \"nose\""));
+    assert!(broken(|c| c["nodes"][0]["channels"][1]["name"] = json!("blink")).contains("used twice"));
+    assert!(broken(|c| c["nodes"][2]["threshold"] = json!(-1)).contains("threshold"));
+    assert!(broken(|c| c["nodes"][4]["near_s"] = json!(0.5)).contains("near_s"));
+}
+
+#[test]
+fn the_models_that_come_with_openfrenz_load_by_name() {
+    // Written to the model cache (`~/.cache/openfrenz` or `OPENFRENZ_CACHE`), as for any user.
+    let outputs = |name: &str| {
+        let dir = frenz_model::resolve(name).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("config.json")).unwrap(),
+            frenz_model::BUILT_IN.iter().find(|(n, _)| *n == name).unwrap().1
+        );
+        Pipeline::from_dir(&dir).unwrap().spec().outputs.clone()
+    };
+    {
+        assert_eq!(
+            outputs("eog"),
+            [
+                "blink:peaks",
+                "blink:peak_time",
+                "blink:peak_size",
+                "gaze_horizontal:position",
+                "gaze_horizontal:jumps"
+            ]
+        );
+        assert_eq!(outputs("brow-emg"), ["brow:log_sd"]);
+        assert_eq!(
+            outputs("heart"),
+            ["heart:rate_bpm", "heart:sdnn_ms", "heart:rmssd_ms", "heart:quality"]
+        );
+        assert_eq!(
+            outputs("head"),
+            [
+                "tilt:pitch_deg",
+                "tilt:roll_deg",
+                "tilt:from_upright_deg",
+                "tilt:g",
+                "accel_down:sd",
+                "accel_left:sd",
+                "accel_forward:sd",
+                "turn_shake:sd",
+                "turn_nod:sd",
+                "turn_side:sd"
+            ]
+        );
+        assert!(frenz_model::resolve("no-such-model").is_err());
+    }
+    // The same files always have the same fingerprint; any change gives another.
+    let (a, b) = (
+        frenz_model::BUILT_IN[0].1.as_bytes(),
+        frenz_model::BUILT_IN[2].1.as_bytes(),
+    );
+    assert_eq!(frenz_model::fingerprint(&[a]), frenz_model::fingerprint(&[a]));
+    assert_ne!(frenz_model::fingerprint(&[a]), frenz_model::fingerprint(&[b]));
+    assert_ne!(
+        frenz_model::fingerprint(&[b"ab", b"c"]),
+        frenz_model::fingerprint(&[b"a", b"bc"])
+    );
+}
+
+#[test]
+fn tilt_reads_how_the_head_is_held_from_gravity() {
+    let config = json!({
+        "openfrenz_model": "pipeline", "name": "t", "version": "1",
+        "step": { "stream": "accel", "samples": 50 },
+        "nodes": [{ "name": "posture", "op": "tilt", "in": "accel" }],
+        "outputs": ["posture"]
+    });
+    let mut model = Pipeline::from_dir(model_dir(&config, &[]).path()).unwrap();
+    assert_eq!(
+        model.spec().outputs,
+        ["tilt:pitch_deg", "tilt:roll_deg", "tilt:from_upright_deg", "tilt:g"]
+    );
+    let g = 16384.0;
+    let mut held = |x: f64, y: f64, z: f64| {
+        let block = Block {
+            t: vec![0.0; 50],
+            values: vec![vec![x * g; 50], vec![y * g; 50], vec![z * g; 50]],
+        };
+        model
+            .step(&Step::new(0.0, 0.0, [("accel".to_owned(), block)]))
+            .unwrap()
+            .unwrap()
+    };
+    let near = |got: &[f64], want: [f64; 4], what: &str| {
+        for (g, w) in got.iter().zip(want) {
+            assert!((g - w).abs() < 1e-6, "{what}: {got:?}");
+        }
+    };
+    // x points down, so upright the sensor reads one g against it.
+    near(&held(-1.0, 0.0, 0.0), [0.0, 0.0, 0.0, 1.0], "upright");
+    let (s, c) = 30f64.to_radians().sin_cos();
+    near(&held(-c, 0.0, -s), [30.0, 0.0, 30.0, 1.0], "chin down by 30 degrees");
+    near(
+        &held(-c, -s, 0.0),
+        [0.0, 30.0, 30.0, 1.0],
+        "left ear toward the shoulder by 30 degrees",
+    );
+    near(&held(0.0, 0.0, 1.0), [-90.0, 0.0, 90.0, 1.0], "lying on the back");
+    near(&held(0.0, 1.0, 0.0), [0.0, -90.0, 90.0, 1.0], "lying on the right side");
+    near(&held(-2.0, 0.0, 0.0), [0.0, 0.0, 0.0, 2.0], "pushed upward");
+}

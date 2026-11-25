@@ -1,0 +1,25 @@
+{
+  "openfrenz_model": "pipeline",
+  "name": "head",
+  "version": "0.1",
+  "step": { "stream": "accel", "samples": 50 },
+  "inputs": { "gyro": { "samples": 50 } },
+  "nodes": [
+    { "name": "posture", "op": "tilt", "in": "accel" },
+    { "name": "jolts", "op": "filter", "in": "accel", "start": "settled",
+      "steps": [{ "type": "highpass", "low": 0.5 }] },
+    { "name": "jolt_axes", "op": "mix", "in": "jolts", "channels": [
+      { "name": "accel_down", "weights": { "x": 1 } },
+      { "name": "accel_left", "weights": { "y": 1 } },
+      { "name": "accel_forward", "weights": { "z": 1 } }
+    ] },
+    { "name": "jolt_size", "op": "summary", "in": "jolt_axes", "stats": ["sd"] },
+    { "name": "turns", "op": "mix", "in": "gyro", "channels": [
+      { "name": "turn_shake", "weights": { "x": 1 } },
+      { "name": "turn_nod", "weights": { "y": 1 } },
+      { "name": "turn_side", "weights": { "z": 1 } }
+    ] },
+    { "name": "turn_size", "op": "summary", "in": "turns", "stats": ["sd"] }
+  ],
+  "outputs": ["posture", "jolt_size", "turn_size"]
+}

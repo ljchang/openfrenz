@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from collections.abc import Sequence
 from pathlib import Path
 
 import numpy as np
@@ -89,12 +90,20 @@ def find_sessions(root: str | Path) -> list[Path]:
     return sorted(p.parent for p in Path(root).rglob("session.json"))
 
 
-def export(recording: str | Path, out_dir: str | Path = "sessions") -> Session:
+def export(recording: str | Path, out_dir: str | Path = "sessions", models: Sequence[str | Path] = ()) -> Session:
     """Export a recording (``.sqlite``) to ``out_dir/<recording name>/`` and load the result.
 
     The same exporter as ``frenz export``: one Parquet file per stream plus ``session.json``.
     Files already in that folder with the same names are replaced.
+
+    ``models`` are run over the recording and each becomes a table named after the model, with
+    ``t`` and one column per output: names of models that come with openfrenz
+    (``openfrenz.MODELS``), folders, or Hugging Face repositories.
+
+        session = openfrenz.export("recordings/session.sqlite", models=["eog", "heart"])
+        session["eog"]                                   # a DataFrame, one row per step
+        session.meta["tables"]["eog"]["model"]           # version and fingerprint it came from
     """
     from ._native import export_recording
 
-    return load_session(export_recording(Path(recording), Path(out_dir)))
+    return load_session(export_recording(Path(recording), Path(out_dir), [str(m) for m in models]))

@@ -1,0 +1,10 @@
+{
+  "openfrenz_model": "pipeline",
+  "name": "heart",
+  "version": "0.1",
+  "step": { "stream": "ppg", "samples": 125 },
+  "nodes": [
+    { "name": "pulse", "op": "heart", "in": "ppg", "channel": "tag3", "window_steps": 6 }
+  ],
+  "outputs": ["pulse"]
+}

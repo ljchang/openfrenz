@@ -1,9 +1,7 @@
 //! Finding model files and the code that loads them.
 
 use std::collections::BTreeMap;
-use std::path::Path;
-#[cfg(feature = "hub")]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::Error;
 use crate::model::Model;
@@ -82,24 +80,84 @@ impl Registry {
         }
     }
 
-    /// Loads a model from a folder, or from a Hugging Face repository (`owner/name`, optionally
-    /// `owner/name@revision`) when `source` is not a folder.
-    #[cfg(feature = "hub")]
+    /// Loads a model from a folder, by the name of one that comes with openfrenz, or (with the
+    /// `hub` feature) from a Hugging Face repository; see [`resolve`].
     pub fn load(&self, source: &str) -> Result<Box<dyn Model>, Error> {
         self.load_dir(&resolve(source)?)
     }
 }
 
-/// The folder for `source`: itself if it is a folder, otherwise the Hugging Face repository of
-/// that name (`owner/name` or `owner/name@revision`), fetched with [`fetch`].
-#[cfg(feature = "hub")]
+/// Models that come with openfrenz: their names and `config.json` files. None needs stored numbers.
+pub const BUILT_IN: [(&str, &str); 4] = [
+    ("eog", include_str!("../models/eog/config.json")),
+    ("brow-emg", include_str!("../models/brow-emg/config.json")),
+    ("heart", include_str!("../models/heart/config.json")),
+    ("head", include_str!("../models/head/config.json")),
+];
+
+/// The folder for `source`: itself if it is a folder; a model that comes with openfrenz if it
+/// is one of their names ([`BUILT_IN`]); otherwise, with the `hub` feature, the Hugging Face
+/// repository of that name (`owner/name` or `owner/name@revision`), fetched with [`fetch`].
 pub fn resolve(source: &str) -> Result<PathBuf, Error> {
     let path = Path::new(source);
     if path.is_dir() {
         return Ok(path.to_path_buf());
     }
+    if let Some((name, config)) = BUILT_IN.iter().find(|(name, _)| *name == source) {
+        // Written where models are kept, under what the file holds, so that a new version of
+        // openfrenz never reads an older one's copy.
+        let dir = cache()?
+            .join("built-in")
+            .join(name)
+            .join(fingerprint(&[config.as_bytes(), &[]]));
+        let file = dir.join("config.json");
+        if std::fs::read_to_string(&file).ok().as_deref() != Some(*config) {
+            std::fs::create_dir_all(&dir)?;
+            std::fs::write(&file, config)?;
+        }
+        return Ok(dir);
+    }
+    remote(source)
+}
+
+#[cfg(feature = "hub")]
+fn remote(source: &str) -> Result<PathBuf, Error> {
     let (repo, revision) = source.split_once('@').unwrap_or((source, "main"));
     fetch(repo, revision)
+}
+
+#[cfg(not(feature = "hub"))]
+fn remote(source: &str) -> Result<PathBuf, Error> {
+    let known: Vec<&str> = BUILT_IN.iter().map(|(name, _)| *name).collect();
+    Err(Error::Files(format!(
+        "{source}: not a folder, and not a model that comes with openfrenz ({})",
+        known.join(", ")
+    )))
+}
+
+/// A short name for the contents of some files: the same bytes always give the same name, and
+/// any change gives another. It tells whether two results came from the same model; it is not
+/// protection against tampering.
+pub fn fingerprint(parts: &[&[u8]]) -> String {
+    // FNV-1a, 64 bits, with each part's length mixed in so that moving bytes between parts shows.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut mix = |byte: u8| {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    };
+    for part in parts {
+        (part.len() as u64).to_le_bytes().into_iter().for_each(&mut mix);
+        part.iter().copied().for_each(&mut mix);
+    }
+    format!("{hash:016x}")
+}
+
+/// The fingerprint of the model files in `dir`: `config.json` and, if there, `model.safetensors`.
+pub fn fingerprint_dir(dir: &Path) -> Result<String, Error> {
+    let config = std::fs::read(dir.join("config.json"))
+        .map_err(|e| Error::Files(format!("{}: {e}", dir.join("config.json").display())))?;
+    let stored = std::fs::read(dir.join("model.safetensors")).unwrap_or_default();
+    Ok(fingerprint(&[&config, &stored]))
 }
 
 #[cfg(feature = "hub")]
@@ -109,7 +167,6 @@ const FILES: [(&str, bool); 2] = [("config.json", true), ("model.safetensors", f
 #[cfg(feature = "hub")]
 const MAX_BYTES: u64 = 512 << 20;
 
-#[cfg(feature = "hub")]
 fn home() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
@@ -134,7 +191,6 @@ fn token() -> Option<String> {
     std::fs::read_to_string(file).ok().and_then(clean)
 }
 
-#[cfg(feature = "hub")]
 fn cache() -> Result<PathBuf, Error> {
     if let Some(dir) = std::env::var_os("OPENFRENZ_CACHE") {
         return Ok(PathBuf::from(dir));

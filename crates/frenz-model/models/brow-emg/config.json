@@ -1,0 +1,15 @@
+{
+  "openfrenz_model": "pipeline",
+  "name": "brow-emg",
+  "version": "0.1",
+  "step": { "stream": "eeg", "samples": 25 },
+  "nodes": [
+    { "name": "pairs", "op": "mix", "in": "eeg", "channels": [
+      { "name": "brow", "weights": { "forehead_left": 1, "forehead_right": -1 } }
+    ] },
+    { "name": "brow_muscle", "op": "filter", "in": "pairs", "start": "settled",
+      "steps": [{ "type": "notch", "hz": 60 }, { "type": "bandpass", "low": 20, "high": 58 }] },
+    { "name": "brow_level", "op": "summary", "in": "brow_muscle", "stats": ["log_sd"] }
+  ],
+  "outputs": ["brow_level"]
+}

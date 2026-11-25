@@ -204,7 +204,7 @@ impl Asr {
     }
 }
 
-fn model_error(error: frenz_model::Error) -> PyErr {
+pub(crate) fn model_error(error: frenz_model::Error) -> PyErr {
     match error {
         frenz_model::Error::Spec(_) | frenz_model::Error::Files(_) | frenz_model::Error::UnknownKind { .. } => {
             PyValueError::new_err(error.to_string())
@@ -228,7 +228,8 @@ impl Pipeline {
 
 #[pymethods]
 impl Pipeline {
-    /// `source` is a folder or a Hugging Face repository (`owner/name` or `owner/name@revision`).
+    /// `source` is a folder, the name of a model that comes with openfrenz, or a Hugging Face
+    /// repository (`owner/name` or `owner/name@revision`).
     #[new]
     fn new(py: Python<'_>, source: &str) -> PyResult<Self> {
         let dir = py.detach(|| frenz_model::resolve(source)).map_err(model_error)?;
@@ -242,6 +243,12 @@ impl Pipeline {
     #[getter]
     fn folder(&self) -> PathBuf {
         self.dir.clone()
+    }
+
+    /// A short name for the contents of the model's files; it changes whenever they do.
+    #[getter]
+    fn fingerprint(&self) -> PyResult<String> {
+        frenz_model::fingerprint_dir(&self.dir).map_err(model_error)
     }
 
     #[getter]

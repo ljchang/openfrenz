@@ -9,6 +9,7 @@ aligned. Values are raw device units; see ``session.meta``.
 
 from ._native import (
     COMMANDS,
+    MODELS,
     Band,
     BandInfo,
     BandNotFound,
@@ -50,6 +51,7 @@ __all__ = [
     "Discovered",
     "Event",
     "FrenzError",
+    "MODELS",
     "RecordingError",
     "Response",
     "SIGNALS",

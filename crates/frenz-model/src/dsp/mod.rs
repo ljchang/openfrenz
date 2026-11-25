@@ -1,6 +1,6 @@
 //! Signal-processing building blocks for models: filters, spectra, wavelets, envelopes,
-//! summaries, coherence between channels, coupling between rhythms, and heartbeats from a pulse
-//! signal.
+//! summaries, coherence between channels, coupling between rhythms, heartbeats from a pulse
+//! signal, and moments that stand out (peaks, abrupt changes of level).
 //!
 //! Each block comes in the form a step-by-step model needs. Filters carry their state from one
 //! call to the next, so filtering a signal in pieces gives the same numbers as filtering it
@@ -9,6 +9,7 @@
 
 mod asr;
 mod envelope;
+mod events;
 mod filter;
 mod heart;
 mod relate;
@@ -18,6 +19,7 @@ mod wavelet;
 
 pub use asr::{Asr, AsrCalibration, asr_calibrate};
 pub use envelope::{Analytic, analytic};
+pub use events::{JumpSettings, Jumps, Peak, PeakSettings, Peaks, RunningScale};
 pub use filter::{Design, Filter, Section, Start, filtfilt};
 pub use heart::{Heart, heart};
 pub use relate::{Coupling, CouplingSums, CrossSpectrum, Recent, correlation, coupling, cross_spectrum};

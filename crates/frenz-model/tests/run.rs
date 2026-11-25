@@ -248,3 +248,60 @@ fn model_files_name_the_code_that_loads_them() {
     std::fs::write(dir.path().join("config.json"), "{}").unwrap();
     assert!(matches!(registry.load_dir(dir.path()), Err(Error::Files(_))));
 }
+
+#[test]
+fn exported_sessions_can_hold_what_models_give_and_say_where_it_came_from() {
+    let dir = tempfile::tempdir().unwrap();
+    let recording = dir.path().join("synthetic.sqlite");
+    frenz::synth::write_recording(&recording, 40).unwrap();
+    let session = frenz_export::read(&recording).unwrap();
+    let out = dir.path().join("session");
+    session.write(&out).unwrap();
+
+    let made = frenz_model::export_models(
+        &session,
+        &out,
+        &["eog".to_owned(), "brow-emg".to_owned(), "heart".to_owned()],
+    )
+    .unwrap();
+    assert_eq!(
+        made.iter().map(|m| m.table.as_str()).collect::<Vec<_>>(),
+        ["eog", "brow-emg", "heart"]
+    );
+    assert!(made[0].rows > 100, "0.2 s steps over 40 s gave {} rows", made[0].rows);
+    assert!(
+        ["eog", "brow-emg", "heart"]
+            .iter()
+            .all(|m| out.join(format!("{m}.parquet")).is_file())
+    );
+
+    let meta: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(out.join("session.json")).unwrap()).unwrap();
+    let model = &meta["tables"]["eog"]["model"];
+    assert_eq!(meta["tables"]["eog"]["rows"], made[0].rows);
+    assert_eq!(model["name"], "eog");
+    assert_eq!(model["source"], "eog");
+    assert_eq!(
+        model["fingerprint"],
+        frenz_model::fingerprint_dir(&frenz_model::resolve("eog").unwrap()).unwrap()
+    );
+    assert!(model["runner"].as_str().unwrap().starts_with("openfrenz frenz-model "));
+    assert_eq!(model["outputs"][0], "blink:peaks");
+    // The streams the recording was exported with are still listed.
+    assert!(meta["tables"]["eeg"]["rows"].as_u64().unwrap() > 0);
+
+    // A model named like a stream cannot take its table.
+    let clash = tempfile::tempdir().unwrap();
+    std::fs::write(
+        clash.path().join("config.json"),
+        frenz_model::BUILT_IN[2]
+            .1
+            .replace("\"name\": \"heart\"", "\"name\": \"eeg\""),
+    )
+    .unwrap();
+    let source = clash.path().to_string_lossy().to_string();
+    assert!(matches!(
+        frenz_model::export_models(&session, &out, &[source]),
+        Err(frenz_model::Error::Files(m)) if m.contains("already a table")
+    ));
+}

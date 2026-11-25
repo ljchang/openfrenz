@@ -21,6 +21,19 @@
 - **Python: `openfrenz.dsp` and `openfrenz.Pipeline`.** The same blocks on NumPy arrays, and
   pipelines loaded from a folder or the Hugging Face Hub that score a recording (`run`) or a band
   as it streams (`stream`). See [Models and signal processing](docs/MODELS.md).
+- **Eye and brow signals.** New pipeline blocks `mix` (weighted sums of channels), `peaks` (peaks
+  that stand out, with their times) and `jumps` (a level followed through abrupt changes), and the
+  `log_sd` statistic.
+- **Models that come with openfrenz**, loaded by name: `eog` (blinks and horizontal gaze) and
+  `brow-emg` (forehead muscle activity), both from the EEG stream, `heart` (heart rate and its variability from the
+  pulse sensor) and `head` (how the head is held and how much it moves and turns, from the motion
+  sensors, with a new `tilt` block). All are experimental; see
+  [Models that come with openfrenz](docs/MODELS.md#models-that-come-with-openfrenz).
+- **Model outputs in exported sessions.** `frenz export --model NAME` and
+  `openfrenz.export(..., models=[...])` run models over a recording and write what each gives as
+  a table. `session.json` records the model's name, version, a fingerprint of its files and the
+  openfrenz version that ran it, so sessions made with an older model can be found and exported
+  again.
 - The minimum Rust version is 1.89, which a dependency already required.
 - The live sample buffers moved from the Python bindings into `frenz_model::streams`, so Rust
   programs get the same timed, segmented samples Python does.

@@ -46,6 +46,7 @@
 //! ```
 
 pub mod dsp;
+mod export;
 mod load;
 mod model;
 mod pipeline;
@@ -53,9 +54,10 @@ mod run;
 mod stepper;
 pub mod streams;
 
-pub use load::{CONFIG_KEY, Registry, kind};
+pub use export::{Exported, export_models};
 #[cfg(feature = "hub")]
-pub use load::{fetch, resolve};
+pub use load::fetch;
+pub use load::{BUILT_IN, CONFIG_KEY, Registry, fingerprint, fingerprint_dir, kind, resolve};
 pub use model::{Block, Input, Model, ModelError, Output, Spec, Step, Take};
 pub use pipeline::Pipeline;
 pub use run::{Live, Run, run_recording, run_session};

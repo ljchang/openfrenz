@@ -15,7 +15,8 @@ class Pipeline:
     """A model made of standard blocks, loaded from a folder or a Hugging Face repository.
 
     ``source`` is a folder holding ``config.json`` (and ``model.safetensors`` if any block needs
-    stored numbers), or a repository written ``owner/name`` or ``owner/name@revision``. Private
+    stored numbers), the name of a model that comes with openfrenz (``openfrenz.MODELS``), or a
+    repository written ``owner/name`` or ``owner/name@revision``. Private
     repositories use the token in ``HF_TOKEN`` or the Hugging Face command-line login.
 
         model = openfrenz.Pipeline("my-model")
@@ -35,6 +36,15 @@ class Pipeline:
     @property
     def version(self) -> str:
         return self._native.version
+
+    @property
+    def fingerprint(self) -> str:
+        """A short name for the contents of the model's files; it changes whenever they do.
+
+        An exported session stores it for each model it ran (``session.meta["tables"][name]["model"]``),
+        so comparing the two tells whether the session was made with this model.
+        """
+        return self._native.fingerprint
 
     @property
     def folder(self) -> Path:

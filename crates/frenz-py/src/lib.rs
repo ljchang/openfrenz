@@ -839,19 +839,25 @@ fn export_error(error: frenz_export::Error) -> PyErr {
     }
 }
 
-/// Exports a recording to `out_dir/<recording name>/` and returns that folder.
+/// Exports a recording to `out_dir/<recording name>/`, runs `models` over it and writes what
+/// each gives as a table, and returns that folder.
 #[pyfunction]
-fn export_recording(py: Python<'_>, recording: PathBuf, out_dir: PathBuf) -> PyResult<PathBuf> {
-    py.detach(|| {
-        let session = frenz_export::read(&recording)?;
-        let name = recording
-            .file_stem()
-            .map_or_else(|| "session".into(), |stem| stem.to_string_lossy().to_string());
-        let dir = out_dir.join(name);
-        session.write(&dir)?;
-        Ok(dir)
-    })
-    .map_err(export_error)
+#[pyo3(signature = (recording, out_dir, models = Vec::new()))]
+fn export_recording(py: Python<'_>, recording: PathBuf, out_dir: PathBuf, models: Vec<String>) -> PyResult<PathBuf> {
+    let (session, dir) = py
+        .detach(|| {
+            let session = frenz_export::read(&recording)?;
+            let name = recording
+                .file_stem()
+                .map_or_else(|| "session".into(), |stem| stem.to_string_lossy().to_string());
+            let dir = out_dir.join(name);
+            session.write(&dir)?;
+            Ok((session, dir))
+        })
+        .map_err(export_error)?;
+    py.detach(|| frenz_model::export_models(&session, &dir, &models))
+        .map_err(model::model_error)?;
+    Ok(dir)
 }
 
 /// Counts what a recording holds, as `frenz summary` does: duration, samples and rate per stream,
@@ -1009,6 +1015,8 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
         commands.set_item(name, PyTuple::new(py, parameters)?)?;
     }
     module.add("COMMANDS", commands)?;
+    let built_in: Vec<&str> = frenz_model::BUILT_IN.iter().map(|(name, _)| *name).collect();
+    module.add("MODELS", built_in)?;
     module.add_class::<Discovered>()?;
     module.add_function(wrap_pyfunction!(scan, module)?)?;
     module.add_function(wrap_pyfunction!(connect, module)?)?;
