@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Private models with a token in hand.** `resolve_with` and `fetch_with` (Rust) and
+  `Pipeline(source, token=...)` (Python) read Hugging Face repositories with a given token. A
+  repository that cannot be read gives a new `Error::Access` saying whether a token or an invitation
+  is missing. A branch fetched before is used from the local copy when Hugging Face cannot be
+  reached. `HF_ENDPOINT` points at a mirror.
 - **`frenz-model`: run models on recordings and live bands.** A `Model` names the streams it
   reads (any the band sends; required, preferred, or taken as they arrive) and is run one step at
   a time by `run_recording` or `Live`, with a reset wherever data is missing. `Registry` loads

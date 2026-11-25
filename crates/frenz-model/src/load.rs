@@ -100,6 +100,17 @@ pub const BUILT_IN: [(&str, &str); 5] = [
 /// is one of their names ([`BUILT_IN`]); otherwise, with the `hub` feature, the Hugging Face
 /// repository of that name (`owner/name` or `owner/name@revision`), fetched with [`fetch`].
 pub fn resolve(source: &str) -> Result<PathBuf, Error> {
+    resolve_source(source, None)
+}
+
+/// [`resolve`], reading Hugging Face repositories with `token` instead of the one in the
+/// environment or the command-line login. For programs that keep their own credentials.
+#[cfg(feature = "hub")]
+pub fn resolve_with(source: &str, token: Option<&str>) -> Result<PathBuf, Error> {
+    resolve_source(source, token)
+}
+
+fn resolve_source(source: &str, token: Option<&str>) -> Result<PathBuf, Error> {
     let path = Path::new(source);
     if path.is_dir() {
         return Ok(path.to_path_buf());
@@ -118,17 +129,17 @@ pub fn resolve(source: &str) -> Result<PathBuf, Error> {
         }
         return Ok(dir);
     }
-    remote(source)
+    remote(source, token)
 }
 
 #[cfg(feature = "hub")]
-fn remote(source: &str) -> Result<PathBuf, Error> {
+fn remote(source: &str, token: Option<&str>) -> Result<PathBuf, Error> {
     let (repo, revision) = source.split_once('@').unwrap_or((source, "main"));
-    fetch(repo, revision)
+    fetch_with(repo, revision, token)
 }
 
 #[cfg(not(feature = "hub"))]
-fn remote(source: &str) -> Result<PathBuf, Error> {
+fn remote(source: &str, _token: Option<&str>) -> Result<PathBuf, Error> {
     let known: Vec<&str> = BUILT_IN.iter().map(|(name, _)| *name).collect();
     Err(Error::Files(format!(
         "{source}: not a folder, and not a model that comes with openfrenz ({})",
@@ -217,23 +228,31 @@ type Download = (Vec<u8>, Option<String>);
 
 /// Downloads `file` of `repo` at `revision`. `Ok(None)` if the repository has no such file.
 #[cfg(feature = "hub")]
-fn download(repo: &str, revision: &str, file: &str) -> Result<Option<Download>, Error> {
+fn download(
+    endpoint: &str,
+    repo: &str,
+    revision: &str,
+    file: &str,
+    token: Option<&str>,
+) -> Result<Option<Download>, Fault> {
     use std::io::Read;
 
-    let url = format!("https://huggingface.co/{repo}/resolve/{revision}/{file}");
+    let url = format!("{endpoint}/{repo}/resolve/{revision}/{file}");
     let mut request = ureq::get(&url);
-    if let Some(token) = token() {
+    if let Some(token) = token {
         request = request.header("Authorization", format!("Bearer {token}"));
     }
     let mut response = match request.call() {
         Ok(response) => response,
         Err(ureq::Error::StatusCode(404)) => return Ok(None),
-        Err(ureq::Error::StatusCode(401 | 403)) => {
-            return Err(Error::Fetch(format!(
-                "{repo}: access denied; for a private repository set HF_TOKEN or log in with the Hugging Face command-line tool"
-            )));
+        Err(ureq::Error::StatusCode(401 | 403)) => return Err(Fault::Denied),
+        Err(ureq::Error::StatusCode(code)) => {
+            return Err(Fault::Other(Error::Fetch(format!(
+                "{repo}/{file}: the server answered {code}"
+            ))));
         }
-        Err(e) => return Err(Error::Fetch(format!("{repo}/{file}: {e}"))),
+        // No answer at all: no network, or the server could not be reached.
+        Err(e) => return Err(Fault::Unreachable(format!("{repo}/{file}: {e}"))),
     };
     let commit = response
         .headers()
@@ -247,45 +266,220 @@ fn download(repo: &str, revision: &str, file: &str) -> Result<Option<Download>, 
         .as_reader()
         .take(MAX_BYTES)
         .read_to_end(&mut bytes)
-        .map_err(|e| Error::Fetch(format!("{repo}/{file}: {e}")))?;
+        .map_err(|e| Fault::Unreachable(format!("{repo}/{file}: {e}")))?;
     Ok(Some((bytes, commit)))
+}
+
+/// Why a download failed.
+#[cfg(feature = "hub")]
+enum Fault {
+    /// The server refused: private, and no token or one without access.
+    Denied,
+    /// The server could not be reached.
+    Unreachable(String),
+    Other(Error),
+}
+
+/// The error for a repository that cannot be read, saying what to do about it.
+#[cfg(feature = "hub")]
+fn no_access(repo: &str, token: Option<&str>) -> Error {
+    Error::Access(match token {
+        None => format!(
+            "{repo} was not found, or it is private: give a Hugging Face token from an account that has been invited to it"
+        ),
+        Some(_) => format!(
+            "{repo} was not found, or the Hugging Face token given has no access to it: ask the repository's owners for an invitation"
+        ),
+    })
 }
 
 /// Fetches the model files of the Hugging Face repository `repo` (`owner/name`) at `revision`
 /// (a branch, tag or commit) and returns the folder holding them.
 ///
 /// Files are kept per commit under `~/.cache/openfrenz` (or `OPENFRENZ_CACHE`), so a commit is
-/// downloaded once; a branch name is looked up each time to see which commit it points to.
-/// Private repositories need a token in `HF_TOKEN` or a Hugging Face command-line login.
+/// downloaded once; a branch name is looked up each time to see which commit it points to, and
+/// when the server cannot be reached the commit it last pointed to is used. Private repositories
+/// need a token in `HF_TOKEN` or a Hugging Face command-line login; see [`fetch_with`] to give one.
 #[cfg(feature = "hub")]
 pub fn fetch(repo: &str, revision: &str) -> Result<PathBuf, Error> {
+    fetch_with(repo, revision, token().as_deref())
+}
+
+/// [`fetch`] with `token` instead of the one in the environment or the command-line login.
+#[cfg(feature = "hub")]
+pub fn fetch_with(repo: &str, revision: &str, token: Option<&str>) -> Result<PathBuf, Error> {
+    // `HF_ENDPOINT` points at a mirror, as for the Hugging Face tools.
+    let endpoint = std::env::var("HF_ENDPOINT")
+        .ok()
+        .map(|e| e.trim_end_matches('/').to_owned())
+        .filter(|e| !e.is_empty())
+        .unwrap_or_else(|| "https://huggingface.co".to_owned());
+    fetch_from(&endpoint, &cache()?, repo, revision, token)
+}
+
+#[cfg(feature = "hub")]
+fn fetch_from(endpoint: &str, cache: &Path, repo: &str, revision: &str, token: Option<&str>) -> Result<PathBuf, Error> {
     let parts: Vec<&str> = repo.split('/').collect();
     if parts.len() != 2 || !parts.iter().all(|p| safe(p)) || !safe(revision) {
         return Err(Error::Fetch(format!(
             "{repo}@{revision}: not a folder, and not a repository written owner/name"
         )));
     }
-    let root = cache()?.join("models").join(parts.join("--"));
+    let token = token.map(str::trim).filter(|t| !t.is_empty());
+    let root = cache.join("models").join(parts.join("--"));
     let complete = |dir: &Path| dir.join("config.json").is_file() && dir.join(".complete").is_file();
     if complete(&root.join(revision)) {
         return Ok(root.join(revision)); // a commit already fetched
     }
-    let (config, commit) = download(repo, revision, "config.json")?
-        .ok_or_else(|| Error::Fetch(format!("{repo}@{revision}: no config.json")))?;
+    // The commit a branch or tag pointed to when it was last fetched.
+    let remembered = root.join("refs").join(revision);
+    let (config, commit) = match download(endpoint, repo, revision, "config.json", token) {
+        Ok(Some(found)) => found,
+        Ok(None) | Err(Fault::Denied) => return Err(no_access(repo, token)),
+        Err(Fault::Unreachable(why)) => {
+            let last = std::fs::read_to_string(&remembered).unwrap_or_default();
+            let last = last.trim();
+            if safe(last) && complete(&root.join(last)) {
+                return Ok(root.join(last));
+            }
+            return Err(Error::Fetch(format!(
+                "{why}; and {repo}@{revision} has not been fetched on this computer before"
+            )));
+        }
+        Err(Fault::Other(error)) => return Err(error),
+    };
     let commit = commit.unwrap_or_else(|| revision.to_owned());
     let dir = root.join(&commit);
+    let remember = || -> Result<(), Error> {
+        if commit != revision {
+            std::fs::create_dir_all(root.join("refs"))?;
+            std::fs::write(&remembered, &commit)?;
+        }
+        Ok(())
+    };
     if complete(&dir) {
+        remember()?;
         return Ok(dir);
     }
     std::fs::create_dir_all(&dir)?;
     std::fs::write(dir.join("config.json"), config)?;
     for (file, required) in FILES.into_iter().skip(1) {
-        match download(repo, &commit, file)? {
-            Some((bytes, _)) => std::fs::write(dir.join(file), bytes)?,
-            None if required => return Err(Error::Fetch(format!("{repo}@{revision}: no {file}"))),
-            None => {}
+        match download(endpoint, repo, &commit, file, token) {
+            Ok(Some((bytes, _))) => std::fs::write(dir.join(file), bytes)?,
+            Ok(None) if required => return Err(Error::Fetch(format!("{repo}@{revision}: no {file}"))),
+            Ok(None) => {}
+            Err(Fault::Denied) => return Err(no_access(repo, token)),
+            Err(Fault::Unreachable(why)) => return Err(Error::Fetch(why)),
+            Err(Fault::Other(error)) => return Err(error),
         }
     }
     std::fs::write(dir.join(".complete"), "")?;
+    remember()?;
     Ok(dir)
+}
+
+#[cfg(all(test, feature = "hub"))]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing, clippy::panic)]
+mod tests {
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+
+    /// A stand-in for the Hugging Face server: answers every request with what `answer` gives for
+    /// its path and authorization header, and records the requests.
+    fn server(answer: fn(&str, Option<&str>) -> (u16, String)) -> (String, Arc<Mutex<Vec<String>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = format!("http://{}", listener.local_addr().unwrap());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = seen.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let path = line.split_whitespace().nth(1).unwrap_or_default().to_owned();
+                let mut auth = None;
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).unwrap() <= 2 {
+                        break;
+                    }
+                    if let Some(value) = header
+                        .strip_prefix("authorization: ")
+                        .or(header.strip_prefix("Authorization: "))
+                    {
+                        auth = Some(value.trim().to_owned());
+                    }
+                }
+                log.lock()
+                    .unwrap()
+                    .push(format!("{path} {}", auth.as_deref().unwrap_or("-")));
+                let (status, body) = answer(&path, auth.as_deref());
+                let reply = format!(
+                    "HTTP/1.1 {status} X\r\nx-repo-commit: abc123\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(reply.as_bytes()).unwrap();
+            }
+        });
+        (address, seen)
+    }
+
+    const CONFIG: &str = r#"{"openfrenz_model": "pipeline"}"#;
+
+    #[test]
+    fn private_repositories_need_a_token_with_access() {
+        let cache = tempfile::tempdir().unwrap();
+        let (hub, seen) = server(|path, auth| match (path.ends_with("config.json"), auth) {
+            (true, Some("Bearer good")) => (200, CONFIG.into()),
+            (true, Some(_)) => (404, String::new()),
+            (true, None) => (401, String::new()),
+            _ => (404, String::new()),
+        });
+        let missing = fetch_from(&hub, cache.path(), "lab/model", "main", None).unwrap_err();
+        assert!(
+            matches!(&missing, Error::Access(m) if m.contains("give a Hugging Face token")),
+            "{missing}"
+        );
+        let wrong = fetch_from(&hub, cache.path(), "lab/model", "main", Some("bad")).unwrap_err();
+        assert!(
+            matches!(&wrong, Error::Access(m) if m.contains("ask the repository's owners")),
+            "{wrong}"
+        );
+        let dir = fetch_from(&hub, cache.path(), "lab/model", "main", Some(" good ")).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("config.json")).unwrap(), CONFIG);
+        assert!(dir.ends_with("abc123"));
+        assert!(
+            seen.lock().unwrap().iter().any(|r| r.ends_with("Bearer good")),
+            "the token was trimmed and sent"
+        );
+    }
+
+    #[test]
+    fn a_branch_fetched_before_is_used_when_the_server_cannot_be_reached() {
+        let cache = tempfile::tempdir().unwrap();
+        let (hub, _) = server(|path, _| {
+            if path.ends_with("config.json") {
+                (200, CONFIG.into())
+            } else {
+                (404, String::new())
+            }
+        });
+        let online = fetch_from(&hub, cache.path(), "lab/model", "main", None).unwrap();
+        // Nothing listens on this port any more.
+        let closed = {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            format!("http://{}", listener.local_addr().unwrap())
+        };
+        let offline = fetch_from(&closed, cache.path(), "lab/model", "main", None).unwrap();
+        assert_eq!(online, offline);
+        let never = fetch_from(&closed, cache.path(), "lab/other", "main", None).unwrap_err();
+        assert!(
+            matches!(&never, Error::Fetch(m) if m.contains("has not been fetched on this computer")),
+            "{never}"
+        );
+    }
 }

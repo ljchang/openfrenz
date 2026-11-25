@@ -475,8 +475,19 @@ model = openfrenz.Pipeline("owner/name")            # or "owner/name@v1.0", "own
 ```
 
 Files are downloaded once per commit into `~/.cache/openfrenz` (set `OPENFRENZ_CACHE` to move
-it); a branch name is looked up each time to see which commit it points to. Private repositories
-use the token in `HF_TOKEN`, or the one saved by the Hugging Face command-line login. The files hold numbers and
+it); a branch name is looked up each time to see which commit it points to, and when Hugging Face
+cannot be reached the commit it pointed to last time is used, so a model fetched once also works
+offline.
+
+Private repositories need a token from an account with access. Give it as `token`, or let
+openfrenz find one in `HF_TOKEN` or the Hugging Face command-line login:
+
+```python
+model = openfrenz.Pipeline("lab/private-model", token=my_token)
+```
+
+A repository that cannot be read (private without a token with access, or not there) raises an
+error that says which; `HF_ENDPOINT` points openfrenz at a mirror. The files hold numbers and
 settings only and are never executed, and the sizes a `config.json` can ask for are bounded
 (samples per step, filter order, steps kept, and so on), so a model from an unknown source can
 be slow or wrong but cannot run code. Model files over 512 MB are not downloaded.
