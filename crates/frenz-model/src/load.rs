@@ -88,11 +88,12 @@ impl Registry {
 }
 
 /// Models that come with openfrenz: their names and `config.json` files. None needs stored numbers.
-pub const BUILT_IN: [(&str, &str); 4] = [
+pub const BUILT_IN: [(&str, &str); 5] = [
     ("eog", include_str!("../models/eog/config.json")),
     ("brow-emg", include_str!("../models/brow-emg/config.json")),
     ("heart", include_str!("../models/heart/config.json")),
     ("head", include_str!("../models/head/config.json")),
+    ("eeg-power", include_str!("../models/eeg-power/config.json")),
 ];
 
 /// The folder for `source`: itself if it is a folder; a model that comes with openfrenz if it

@@ -34,7 +34,7 @@
 - **Models that come with openfrenz**, loaded by name: `eog` (blinks and horizontal gaze) and
   `brow-emg` (forehead muscle activity), both from the EEG stream, `heart` (heart rate and its variability from the
   pulse sensor) and `head` (how the head is held and how much it moves and turns, from the motion
-  sensors, with a new `tilt` block). All are experimental; see
+  sensors, with a new `tilt` block) and `eeg-power` (power in the usual EEG bands). All are experimental; see
   [Models that come with openfrenz](docs/MODELS.md#models-that-come-with-openfrenz).
 - **Model outputs in exported sessions.** `frenz export --model NAME` and
   `openfrenz.export(..., models=[...])` run models over a recording and write what each gives as

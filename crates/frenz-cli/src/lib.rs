@@ -67,7 +67,7 @@ enum Cmd {
         #[arg(short, long, default_value = "sessions")]
         out: PathBuf,
         /// Also run a model over each recording and write what it gives as a table: a model
-        /// that comes with openfrenz (eog, brow-emg, heart, head), a folder, or a Hugging Face repository
+        /// that comes with openfrenz (eog, brow-emg, heart, head, eeg-power), a folder, or a Hugging Face repository
         /// (owner/name). Repeat for several.
         #[arg(short, long = "model")]
         models: Vec<String>,
