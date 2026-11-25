@@ -24,6 +24,10 @@
 - **Eye and brow signals.** New pipeline blocks `mix` (weighted sums of channels), `peaks` (peaks
   that stand out, with their times) and `jumps` (a level followed through abrupt changes), and the
   `log_sd` statistic.
+- **Shares, ratios and averages.** `band_power` can measure magnitude instead of power, integrate with
+  Simpson's rule and leave out the window; new blocks `ratios` (any measure over any other, channel by
+  channel), `average` (a measure over channels) and `phase_amplitude` (one band's phase against another's
+  envelope).
 - **Models that come with openfrenz**, loaded by name: `eog` (blinks and horizontal gaze) and
   `brow-emg` (forehead muscle activity), both from the EEG stream, `heart` (heart rate and its variability from the
   pulse sensor) and `head` (how the head is held and how much it moves and turns, from the motion

@@ -25,7 +25,8 @@
 //! during the step.
 //! Blocks that need stored numbers (`asr`, `normalize`, `network`) name them in `model.safetensors`
 //! with `weights`. The blocks: `select`, `mix`, `filter`, `asr`, `band_power`, `wavelet`, `envelope`,
-//! `summary`, `quality`, `coherence`, `coupling`, `heart`, `peaks`, `jumps`, `tilt`, `concat`,
+//! `summary`, `quality`, `coherence`, `coupling`, `phase_amplitude`, `heart`, `peaks`, `jumps`, `tilt`,
+//! `ratios`, `average`, `concat`,
 //! `normalize`, `history`, `network`. A pipeline
 //! is checked when it is loaded by running it on silence, so a mismatch between blocks is
 //! reported then, with the node's name.

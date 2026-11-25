@@ -318,17 +318,20 @@ config.json: node z: was stored for 35 features and given 18
 | `mix` | signal → signal | `channels`: list of `{"name": ..., "weights": {channel: weight}}`. Each new channel is a weighted sum, for example a difference between two electrodes |
 | `filter` | signal → signal | `steps`: filters as in [Filters](#filters); `start`: `zero` or `settled` (`zero`); `zero_phase`: filter each step both ways, without state (`false`) |
 | `asr` | signal → signal | `weights`: prefix of `mixing` and `threshold`; `max_removed` (0.66); `window_s` (0.5) |
-| `band_power` | signal → features | `bands`: list of `[low, high]`; `relative_to`: `[low, high]` to divide by; `log` (`false`); `segment`: average over stretches of that many samples |
+| `band_power` | signal → features | `bands`: list of `[low, high]`; `relative_to`: `[low, high]` to divide by; `log` (`false`); `segment`: average over stretches of that many samples; `measure`: `power` or `magnitude` (`power`); `integrate`: `sum` or `simpson` (`sum`); `window`: `hann` or `none` (`hann`); `remove_mean` (`true`). See [Shares, ratios and averages](#shares-ratios-and-averages) |
 | `wavelet` | signal → features | `frequencies`: list of Hz; `cycles` (6); `trim_s`: seconds left out at each end (0); `log` (`false`). Gives the mean amplitude over the step |
 | `envelope` | signal → features | `band`: `[low, high]`; `order` (2); `stats` (`["mean", "sd"]`) |
 | `summary` | signal → features | `stats`: any of `mean`, `sd`, `log_sd`, `range`, `largest_step` (`["mean", "sd"]`) |
 | `quality` | signal → features | `limit`: the largest value the sensor reports. Gives the shares of repeated, clipped and invalid samples |
 | `coherence` | signal → features | `pairs`: list of `[channel, channel]`; `bands`; `segment` (125); `average_steps` (1) |
+| `phase_amplitude` | signal → features | `phase_band`, `amplitude_band`; `order` (2); `trim_s` (0); `stats`: any of `amplitude_mean`, `amplitude_sd`, `phase_mean`, `phase_sd`, `correlation` (all) |
 | `coupling` | signal → features | `phase_band`, `amplitude_band`; `order` (2); `bins` (18); `trim_s` (0); `average_steps` (1) |
 | `heart` | signal → features | `channel` (the first); `invert` (`false`); `window_steps` (1). Gives rate, SDNN, RMSSD and quality |
 | `peaks` | signal → features | `threshold` (4); `back_s` (2); `ahead_s` (0.25); `min_gap_s` (0.25); `scale_half_life_s` (120); `warmup_s` (5). Gives `peaks`, `peak_time` and `peak_size`; see [Moments](#moments-peaks-and-jumps) |
 | `jumps` | signal → features | `threshold` (6); `leak_s` (5); `min_gap_s` (0.12); `near_s` (0.048); `far_s` (0.152); `scale_half_life_s` (120); `warmup_s` (5). Gives `position` and `jumps` |
 | `tilt` | signal → features | `counts_per_g` (16384). Reads the accelerometer's `x`, `y`, `z`; gives `pitch_deg`, `roll_deg`, `from_upright_deg` and `g`; see [Head posture and movement](#head-posture-and-movement) |
+| `ratios` | features → features | `pairs`: list of `[measure, measure]`; `log` (`false`) |
+| `average` | features → features | `channels`: which to average (all); `name` (`mean`) |
 | `concat` | features, ... → features | |
 | `normalize` | features → features | `weights`: prefix of stored `center` and `scale`; or `half_life_steps` and `warmup_steps` (2) to track them as steps pass |
 | `history` | features → sequence | `steps`: how many to keep |
@@ -388,6 +391,36 @@ high-pass filter would lose. `jumps` counts the jumps added during the step, eac
 it happened.
 
 Neither block detects anything for the first `warmup_s`, while it learns the ordinary size.
+
+### Shares, ratios and averages
+
+Three blocks turn per-channel spectra into the kind of numbers a model is usually given:
+
+- **`band_power`** gives power per band by default. With `"measure": "magnitude"` it gives the size of the
+  Fourier transform instead of its square, over the whole step without averaging. `"integrate": "simpson"`
+  integrates each band with Simpson's rule over the bins nearest its edges, both included, instead of summing
+  bins. With `relative_to`, each band is a share of that range.
+- **`ratios`** divides one measure by another for every channel that has both. The pair
+  `["magnitude:4-8", "magnitude:8-12"]` turns `forehead_left:magnitude:4-8` and
+  `forehead_left:magnitude:8-12` into `forehead_left:magnitude:4-8/magnitude:8-12`, and the same for each other
+  channel. Any two measures can be paired, from any blocks, as long as both reach the `ratios` node.
+- **`average`** averages each measure over channels: `forehead_left:x` and `forehead_right:x` become
+  `mean:x`. Averaging after `ratios` gives the mean of the ratios; averaging the signals first would not.
+
+```json
+{ "name": "band", "op": "filter", "in": "front", "zero_phase": true,
+  "steps": [{ "type": "bandpass", "low": 2, "high": 45, "order": 1 }] },
+{ "name": "shares", "op": "band_power", "in": "band", "bands": [[4, 8], [8, 12]], "relative_to": [0, 62],
+  "measure": "magnitude", "integrate": "simpson", "window": "none" },
+{ "name": "ratio", "op": "ratios", "in": "shares", "pairs": [["magnitude:4-8", "magnitude:8-12"]] },
+{ "name": "mean", "op": "average", "in": ["ratio"] }
+```
+
+**`phase_amplitude`** relates the phase of one band to the amplitude envelope of another within each step: the
+envelope's mean and spread, the phase's mean and spread after removing its jumps of 2π, and the correlation
+between the two. Both bands are filtered both ways, so the step's ends are slightly distorted; `trim_s`
+leaves them out. `coupling` measures something different: how the envelope's size depends on the phase,
+over several steps.
 
 ### Write a pipeline from Python
 

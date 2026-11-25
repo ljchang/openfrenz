@@ -36,6 +36,22 @@ impl Spectrum {
             .sum()
     }
 
+    /// The band between `low_hz` and `high_hz` integrated with Simpson's rule over the bins nearest the two edges,
+    /// both included. Fewer than two bins give the single bin's value times the resolution; an even number of
+    /// bins uses Simpson's rule on all but the last interval and the trapezoid rule on that one.
+    pub fn band_simpson(&self, low_hz: f64, high_hz: f64) -> f64 {
+        if self.density.is_empty() || self.resolution_hz <= 0.0 {
+            return f64::NAN;
+        }
+        let last = self.density.len() - 1;
+        let bin = |hz: f64| ((hz / self.resolution_hz).round().max(0.0) as usize).min(last);
+        let (from, to) = (bin(low_hz), bin(high_hz));
+        if to <= from {
+            return self.density[from] * self.resolution_hz;
+        }
+        simpson(&self.density[from..=to], self.resolution_hz)
+    }
+
     /// Power in each band divided by the power between `total.0` and `total.1`.
     pub fn relative_band_power(&self, bands: &[(f64, f64)], total: (f64, f64)) -> Vec<f64> {
         let all = self.band_power(total.0, total.1);
@@ -43,6 +59,54 @@ impl Spectrum {
             .iter()
             .map(|(low, high)| self.band_power(*low, *high) / all)
             .collect()
+    }
+}
+
+/// Composite Simpson's rule on evenly spaced values `y`, spacing `h`. An even number of values uses Simpson's
+/// rule on all but the last interval and the trapezoid rule on that one.
+fn simpson(y: &[f64], h: f64) -> f64 {
+    match y.len() {
+        0 => 0.0,
+        1 => y[0] * h,
+        2 => h * (y[0] + y[1]) / 2.0,
+        n if n % 2 == 1 => {
+            let inner: f64 = y[1..n - 1]
+                .iter()
+                .enumerate()
+                .map(|(i, v)| if i % 2 == 0 { 4.0 * v } else { 2.0 * v })
+                .sum();
+            h / 3.0 * (y[0] + inner + y[n - 1])
+        }
+        n => simpson(&y[..n - 1], h) + h * (y[n - 2] + y[n - 1]) / 2.0,
+    }
+}
+
+/// The size of each frequency in the whole of `x`: the magnitude of its Fourier transform at frequencies from
+/// 0 to half the sample rate, unscaled. With `hann`, a Hann window first; with `remove_mean`, the mean is
+/// subtracted first. Useful for shares of a total, where the scale cancels.
+pub fn magnitude(x: &[f64], rate_hz: f64, hann_window: bool, remove_mean: bool) -> Spectrum {
+    let n = x.len();
+    if n == 0 {
+        return Spectrum {
+            resolution_hz: 0.0,
+            density: Vec::new(),
+        };
+    }
+    let mean = if remove_mean {
+        x.iter().sum::<f64>() / n as f64
+    } else {
+        0.0
+    };
+    let window = if hann_window { hann(n) } else { vec![1.0; n] };
+    let mut buffer: Vec<Complex64> = x
+        .iter()
+        .zip(&window)
+        .map(|(v, w)| Complex64::new((v - mean) * w, 0.0))
+        .collect();
+    FftPlanner::new().plan_fft_forward(n).process(&mut buffer);
+    Spectrum {
+        resolution_hz: rate_hz / n as f64,
+        density: buffer[..n / 2 + 1].iter().map(|c| c.norm()).collect(),
     }
 }
 
