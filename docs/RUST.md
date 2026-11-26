@@ -278,7 +278,9 @@ state carried across steps), `filtfilt`, `periodogram`, `welch`, `morlet`, `anal
 `quality`. Their numbers follow SciPy's and are tested against it.
 
 A model made only of those blocks needs no code at all: `Pipeline::from_dir` reads it from a
-`config.json`, and a registry built with `.with_pipelines()` loads it like any other kind. The
+`config.json`, and a registry built with `.with_pipelines()` loads it like any other kind. `Pipeline::from_config` builds one from a
+config held in memory, checked the same way, for programs that write configs (such as an editor); blocks that
+need stored numbers are refused there, since there is no `model.safetensors`. The
 [Models and signal processing](MODELS.md) guide describes every block and the file format.
 
 ## Only the decoders

@@ -16,6 +16,7 @@ terminal, from Python and from Rust.
 | Read live data or analyse sessions in Python | the `openfrenz` package | `pip install openfrenz` | [Python](PYTHON.md) |
 | Build the band into a Rust program | the `frenz` crate | `cargo add frenz` | [Rust](RUST.md) |
 | Filter signals, compute features or run a model, offline or live | `openfrenz.dsp`, `openfrenz.Pipeline`, the `frenz-model` crate | `pip install openfrenz` | [Models and signal processing](MODELS.md) |
+| Build pipelines as a graph and stream the band to LSL from a desktop app | HyperStudy Bridge | [download](https://github.com/hyperstudyio/hyperstudy-bridge/releases) | [HyperStudy Bridge](BRIDGE.md) |
 
 All three run the same code and write the same files.
 

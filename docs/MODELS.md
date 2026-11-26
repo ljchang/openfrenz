@@ -227,6 +227,9 @@ How to read it:
 Three kinds of thing flow between nodes: a *signal* (channels by samples), *features* (named
 numbers describing one step) and a *sequence* (the features of several steps).
 
+[HyperStudy Bridge](BRIDGE.md) draws a pipeline as a graph and edits it there; what it saves is this same
+`config.json`.
+
 ### Run a pipeline
 
 === "Python"
