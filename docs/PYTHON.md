@@ -62,6 +62,9 @@ Streams: `eeg` (125 Hz), `accel` and `gyro` (50 Hz), `ppg` (25 Hz), `heart_rate`
 | `band.latest(name, seconds)` | The most recent stretch without consuming it: live plots and live models |
 
 Values are raw device counts; see [HARDWARE.md](HARDWARE.md) for what is known about scales.
+
+To stream the band to Lab Streaming Layer, or watch it in a real-time dashboard, without writing code, use
+[HyperStudy Bridge](BRIDGE.md): it publishes these streams and the models' outputs over LSL.
 Nothing is removed or filled in: a packet the band repeated is delivered and marked in
 `chunk.duplicate`, frozen sensor output in `chunk.held`, and a break in the data starts a new
 number in `chunk.segment`.

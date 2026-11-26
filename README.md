@@ -23,6 +23,7 @@ SpO2, battery and electrode-contact quality.
 |---|---|---|---|
 | Record and export from a terminal | the `frenz` command | `pip install openfrenz` | [CLI guide](docs/CLI.md) |
 | Read live data or analyse sessions in Python | the `openfrenz` package | `pip install openfrenz` | [Python guide](docs/PYTHON.md) |
+| Stream the band to LSL, watch it in a real-time dashboard, build pipelines as a graph | HyperStudy Bridge (desktop app) | [download](https://github.com/hyperstudyio/hyperstudy-bridge/releases) | [HyperStudy Bridge guide](docs/BRIDGE.md) |
 | Build the band into a Rust program | the `frenz` crate | `cargo add frenz` | [Rust guide](docs/RUST.md) |
 
 All three run the same code and write the same files.

@@ -2,17 +2,79 @@
 
 [HyperStudy Bridge](https://github.com/hyperstudyio/hyperstudy-bridge) is a desktop app that connects
 research devices to [HyperStudy](https://hyperstudy.io) experiments. It can connect to a FRENZ band through
-openfrenz: it publishes the band's streams and the built-in models' outputs over Lab Streaming Layer (LSL),
-draws them live, and has an editor for building pipelines as a graph. This page covers what it does with
-openfrenz; the [Bridge's FRENZ guide](https://docs.hyperstudy.io/devices/frenz) covers setting it up.
+openfrenz, with no code to write:
 
-## Live view
+- it [streams the band to Lab Streaming Layer (LSL)](#streaming-to-lsl), raw signals and model outputs alike,
+  for HyperStudy, LabRecorder or any LSL reader;
+- it draws everything in a [real-time dashboard](#real-time-dashboard);
+- it has a [graph editor](#pipelines-as-a-graph) for building pipelines, tried on the band as you build them.
 
-![The Bridge's live view of a band](images/bridge/frenz-live-view.png)
+This page covers what it does with openfrenz; the [Bridge's FRENZ guide](https://docs.hyperstudy.io/devices/frenz)
+covers installing and setting it up. [Download the Bridge](https://github.com/hyperstudyio/hyperstudy-bridge/releases)
+for macOS, Windows or Linux.
 
-Each stream is published as `<band>_<STREAM>` (for example `FRENZI85_EEG`) and each model as
-`<band>_<MODEL>_openfrenz`, with the model's name, version and file fingerprint in the stream's metadata.
-The live view draws the band's signals and every model's outputs as they arrive.
+## Streaming to LSL
+
+In the Bridge, set the FRENZ device's **Connection** to **openfrenz**, enter the band's name and press
+**Connect**. The card shows the band's state and how many streams and samples have been published.
+
+![The FRENZ card in the Bridge, connected through openfrenz](images/bridge/frenz-card.png){ width="320" }
+
+Each of the band's streams and each model becomes one LSL stream, named after the band so that two bands never
+collide. With a band called `FRENZI85`:
+
+| LSL stream | Channels | Rate |
+|---|---|---|
+| `FRENZI85_EEG` | `forehead_right`, `comb_left`, `forehead_left`, `comb_right` | 125 Hz |
+| `FRENZI85_ACCEL`, `FRENZI85_GYRO` | `x`, `y`, `z` | 50 Hz |
+| `FRENZI85_PPG` | `tag2`, `tag3` | 25 Hz |
+| `FRENZI85_HR`, `FRENZI85_SPO2` | `value`, `check` | as the band sends them |
+| `FRENZI85_CONTACT` | `state` (0–3, 3 is good contact) | as the band sends it |
+| `FRENZI85_EOG_openfrenz` | the [`eog` model](MODELS.md#eye-and-brow-signals)'s outputs | every 0.2 s |
+| `FRENZI85_BROW_EMG_openfrenz` | the `brow-emg` model's outputs | every 0.2 s |
+| `FRENZI85_HEART_openfrenz` | the [`heart` model](MODELS.md#heart-rate-and-its-variability)'s outputs | every 5 s |
+| `FRENZI85_HEAD_openfrenz` | the [`head` model](MODELS.md#head-posture-and-movement)'s outputs | every second |
+| `FRENZI85_EEG_POWER_openfrenz` | the [`eeg-power` model](MODELS.md#eeg-power-bands)'s outputs | every second |
+
+A pipeline added in the Bridge (from Hugging Face, or built in its editor) is published the same way, as
+`<band>_<NAME>_openfrenz`. Model streams are declared with an irregular rate, one sample per step.
+
+- **Values** are 64-bit floats: raw device counts for the band's streams (as openfrenz gives them; see
+  [Hardware notes](HARDWARE.md)), and the units this site documents for model outputs. Channel labels are the
+  stream's or model's names.
+- **Time stamps** are openfrenz's estimate of when each sample was taken, in Unix seconds, moved to the
+  computer's LSL clock with one offset measured when the connection opened. Repeated packets are left out.
+- **Metadata** in each stream's description: `device_id`, `session_id`, `openfrenz_source` (the stream, or the
+  model's name and version, with its files' fingerprint for a model from a folder or Hugging Face), `timestamp_policy` (`source_unix`) and
+  `source_unix_to_lsl_offset`, so a recording can always say what produced it.
+- **Source ids** are `frenz-<band>-<session>_<STREAM>`: a new connection gets a new session, and a model
+  replaced while connected keeps its stream and source id, so a reader carries on.
+
+Any LSL reader can take them, for example with `pylsl`:
+
+```python
+from pylsl import StreamInlet, resolve_byprop
+
+info = resolve_byprop("name", "FRENZI85_EOG_openfrenz", timeout=5)[0]
+inlet = StreamInlet(info)
+values, stamp = inlet.pull_sample()          # one step of the eog model
+```
+
+## Real-time dashboard
+
+**Live signals** on the card opens a dashboard of the band's signals and every model's outputs, redrawn several
+times a second. Nothing in it changes what is published or recorded.
+
+![The Bridge's real-time dashboard](images/bridge/frenz-live-view.png)
+
+- **Tiles** at the top: heart rate (with whether the pulse signal is good enough to trust), blinks a minute, how
+  far the head is from upright, electrode contact and battery.
+- **Charts** below: the four electrodes in their own lanes, EEG power by band, eye position with blinks marked,
+  forehead muscle, head angle and the pulse, plus a chart for every model added. Drag a chart to reorder it,
+  collapse it, or hide it and bring it back; the layout is remembered.
+- **Show the last** 5, 10 or 30 seconds, and **Remove drift** to subtract each trace's one-second average from
+  the drawing.
+- **✎ Pipeline** on a model's chart opens that model in the editor, and **+ New signal** starts a new one.
 
 ## Pipelines as a graph
 
