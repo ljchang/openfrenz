@@ -15,6 +15,7 @@ nav = [
     { "Python" = "PYTHON.md" },
     { "Rust" = "RUST.md" },
     { "Models and signal processing" = "MODELS.md" },
+    { "HyperStudy Bridge" = "BRIDGE.md" },
   ] },
   { "Reference" = [
     { "Python API" = "PYTHON_API.md" },
