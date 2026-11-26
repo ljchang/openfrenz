@@ -237,6 +237,9 @@ let mut live = frenz_model::Live::new(model, &band, true)?;
 while let Some(output) = live.next().await? { /* output.t, output.values */ }
 ```
 
+[HyperStudy Bridge](BRIDGE.md) is built this way: it runs each model with `Live` on a connected band and
+publishes every output over Lab Streaming Layer.
+
 The model is reset at the start, at every new segment and after every step that had to be skipped
 because data was missing, so it never carries state across a hole. Skipped steps are counted by
 the stream that was missing (`Live::missed`, `Run::missed`), which is how a model that stays silent
